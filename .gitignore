@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-check
+.wrangler
+.env
+.flare-kit.state.json
+*.log

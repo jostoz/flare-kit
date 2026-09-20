@@ -1,0 +1,19 @@
+name: Budget gate
+
+on:
+  pull_request:
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - name: CPU budget (TRD §7.1)
+        run: bunx vitest run test/budget.cpu.test.ts
+      - name: Data budget projection (TRD §7.2)
+        run: bun run budget:check
+      - name: Quota-degradation contract (TRD §7.5)
+        run: bunx vitest run test/quota.test.ts
