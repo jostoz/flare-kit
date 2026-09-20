@@ -20,11 +20,12 @@ export class CloudflareClient {
   constructor(private readonly apiToken: string) {}
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const isFormData = init.body instanceof FormData;
     const res = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${this.apiToken}`,
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...init.headers,
       },
     });
