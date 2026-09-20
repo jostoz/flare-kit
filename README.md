@@ -31,11 +31,11 @@ CLOUDFLARE_API_TOKEN=... bun run teardown  # tears down what bootstrap created
 - `bun test` — 4/4 passing (quota degradation contract, SSR CPU smoke test).
 - `bun run budget:check` — passes at 66.7% D1 read/write, 33.3% Workers requests, projected at 5,000 MAU.
 - `wrangler deploy --dry-run` — builds clean with all 7 bindings; **600 KB gzip**, under the 1 MB budget.
+- Live `bootstrap.ts` roundtrip against the real Cloudflare REST API — deployed to `https://flare-kit-app.jostoztado.workers.dev` (D1 + KV + R2 + AI bindings live, HTTP 200).
+- `bun run bench:ttfb` (TRD §7.4) against the live deployment — p75 373ms across 5 regions (US, Brazil, Germany, Japan, Hong Kong via check-host.net). **Neither TRD budget applies to `GET /` as shipped**: no `Cache-Control` header (not edge-cached) and no D1 query on the hot path (not the dynamic-with-D1 case) — see script output for the full caveat. Not a pass/fail gate until one of those is added.
 
 ## Not verified in this environment
 
-- Live `bootstrap.ts` roundtrip against the real Cloudflare REST API (needs a `CLOUDFLARE_API_TOKEN`).
-- Multi-region TTFB (`bun run bench:ttfb`, TRD §7.4) — needs a live deployment.
 - `wrangler dev --remote` `cpuTime` reading — needs a live Cloudflare session; the committed CPU test is a coarse local smoke test, not this authoritative measurement (TRD §7.1).
 
 ## Deviation from the original plan

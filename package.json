@@ -13,7 +13,8 @@
     "budget:check": "bun run scripts/budget-check.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply flare-kit-db --local",
-    "size": "wrangler deploy --dry-run --outdir dist-check && node scripts/check-size.mjs"
+    "size": "wrangler deploy --dry-run --outdir dist-check && node scripts/check-size.mjs",
+    "bench:ttfb": "bun run scripts/bench-ttfb.ts"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
