@@ -129,6 +129,15 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
   if (process.env.CF_ANALYTICS_API_TOKEN) {
     bindings.push({ type: "secret_text", name: "CF_ANALYTICS_API_TOKEN", text: process.env.CF_ANALYTICS_API_TOKEN });
   }
+  // Telegram channel (src/server/telegram.ts). Both opt-in and required
+  // together — the webhook handler 503s without a bot token, and rejects
+  // every request without a secret to check against.
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    bindings.push({ type: "secret_text", name: "TELEGRAM_BOT_TOKEN", text: process.env.TELEGRAM_BOT_TOKEN });
+  }
+  if (process.env.TELEGRAM_WEBHOOK_SECRET) {
+    bindings.push({ type: "secret_text", name: "TELEGRAM_WEBHOOK_SECRET", text: process.env.TELEGRAM_WEBHOOK_SECRET });
+  }
   if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     bindings.push({ type: "plain_text", name: "GOOGLE_CLIENT_ID", text: process.env.GOOGLE_CLIENT_ID });
     bindings.push({ type: "secret_text", name: "GOOGLE_CLIENT_SECRET", text: process.env.GOOGLE_CLIENT_SECRET });

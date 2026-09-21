@@ -42,104 +42,142 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+export class DailyQuotaReachedError extends Error {
+  constructor() {
+    super("Daily AI quota reached for this account.");
+  }
+}
+
+export class InvalidImageError extends Error {}
+
+export interface ChatTurnResult {
+  text: string;
+}
+
+/**
+ * The channel-agnostic core of one AI chat turn: quota check, history load,
+ * provider routing + tool-calling, generation (with DeepSeek→Gemini
+ * fallback), and persistence. Shared by every channel this repo exposes —
+ * the authenticated HTTP JSON route below and the Telegram webhook
+ * (src/server/telegram.ts) — so conversation memory, quota accounting, and
+ * routing behave identically regardless of which channel a message arrives
+ * on. `userId` is channel-defined: a better-auth session id for the HTTP
+ * route, a synthetic `telegram:<chatId>` id for Telegram (see telegram.ts)
+ * — `messages`/`ai_usage` have no foreign-key constraint on `users`, so
+ * either works without provisioning a shadow user row.
+ */
+export async function runChatTurn(
+  env: AiEnv,
+  db: Db,
+  userId: string,
+  prompt: string,
+  image?: { mimeType: string; data: string },
+): Promise<ChatTurnResult> {
+  const day = today();
+
+  const [usage] = await withQuotaGuard(() =>
+    db.select().from(schema.aiUsage).where(and(eq(schema.aiUsage.userId, userId), eq(schema.aiUsage.day, day))).limit(1),
+  );
+  if (usage && usage.neurons >= PER_USER_DAILY_NEURON_CAP) {
+    throw new DailyQuotaReachedError();
+  }
+
+  if (image) {
+    if (!ALLOWED_IMAGE_MIME_TYPES.test(image.mimeType)) {
+      throw new InvalidImageError("image.mimeType must be image/png, image/jpeg, image/webp, or image/gif.");
+    }
+    if (image.data.length > MAX_IMAGE_BASE64_CHARS) {
+      throw new InvalidImageError("Image too large (max ~3MB).");
+    }
+  }
+
+  const recentRows = await withQuotaGuard(() =>
+    db
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.userId, userId))
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(AI_HISTORY_WINDOW),
+  );
+  const history: ChatMessage[] = recentRows.reverse().map((m) => ({ role: m.role, content: m.content }));
+  // Images live only in this turn's request to the provider — never
+  // written to D1 (see the persisted `storedPrompt` below), so history
+  // rows loaded above are always text-only.
+  const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt, ...(image ? { image } : {}) }];
+
+  const provider = resolveAiProvider(env, turnMessages);
+  // Tool-calling (web_search, plus any configured MCP server's tools)
+  // is Gemini/DeepSeek-only, see ai-providers.ts. The model decides
+  // per-turn whether to invoke any tool; offering the declarations
+  // doesn't change behavior for turns that don't need them.
+  const toolCallingSupported = provider instanceof GeminiProvider || provider instanceof DeepSeekProvider;
+  let tools = toolCallingSupported ? [webSearchTool] : [];
+  if (toolCallingSupported && env.MCP_SERVER_URL) {
+    try {
+      tools = [...tools, ...(await mcpToolDefinitions(env.MCP_SERVER_URL))];
+    } catch {
+      // A misbehaving/unreachable MCP server degrades to web_search
+      // only, rather than failing the whole chat turn.
+    }
+  }
+
+  let generated: { text: string; estimatedUsageUnits: number };
+  try {
+    generated = await provider.generate(turnMessages, tools);
+  } catch (err) {
+    // DeepSeek can fail independently of the app (rate limit, billing —
+    // e.g. a real "Insufficient Balance" seen live in this repo's own
+    // testing). Falling back to Gemini keeps the request working
+    // instead of surfacing a 500 for an external provider outage; only
+    // meaningful when both keys are configured, since DeepSeek is only
+    // ever chosen over Gemini, never instead of Workers AI.
+    if (provider instanceof DeepSeekProvider && env.GOOGLE_AI_API_KEY) {
+      generated = await new GeminiProvider(env.GOOGLE_AI_API_KEY).generate(turnMessages, tools);
+    } else {
+      throw err;
+    }
+  }
+  const { text, estimatedUsageUnits } = generated;
+
+  const now = Date.now();
+  const storedPrompt = image ? `${prompt} [image attached]` : prompt;
+  await withQuotaGuard(
+    () =>
+      db.insert(schema.messages).values([
+        { id: crypto.randomUUID(), userId, role: "user", content: storedPrompt, createdAt: now },
+        { id: crypto.randomUUID(), userId, role: "assistant", content: text, createdAt: now },
+      ]),
+    "d1_write",
+  );
+  await withQuotaGuard(
+    () =>
+      db
+        .insert(schema.aiUsage)
+        .values({ userId, day, neurons: estimatedUsageUnits })
+        .onConflictDoUpdate({
+          target: [schema.aiUsage.userId, schema.aiUsage.day],
+          set: { neurons: (usage?.neurons ?? 0) + estimatedUsageUnits },
+        }),
+    "d1_write",
+  );
+
+  return { text };
+}
+
 export function createAiRouter() {
   const router = new Hono<{ Bindings: AiEnv; Variables: { userId: string; db: Db } }>();
 
   router.post("/chat", async (c) => {
     const db = c.get("db");
     const userId = c.get("userId");
-    const day = today();
 
     try {
-      const [usage] = await withQuotaGuard(() =>
-        db.select().from(schema.aiUsage).where(and(eq(schema.aiUsage.userId, userId), eq(schema.aiUsage.day, day))).limit(1),
-      );
-      if (usage && usage.neurons >= PER_USER_DAILY_NEURON_CAP) {
-        return c.json({ error: "ai_quota_exceeded", message: "Daily AI quota reached for this account." }, 429);
-      }
-
       const { prompt, image } = await c.req.json<{ prompt: string; image?: { mimeType: string; data: string } }>();
-      if (image) {
-        if (!ALLOWED_IMAGE_MIME_TYPES.test(image.mimeType)) {
-          return c.json({ error: "invalid_image", message: "image.mimeType must be image/png, image/jpeg, image/webp, or image/gif." }, 400);
-        }
-        if (image.data.length > MAX_IMAGE_BASE64_CHARS) {
-          return c.json({ error: "invalid_image", message: "Image too large (max ~3MB)." }, 400);
-        }
-      }
-
-      const recentRows = await withQuotaGuard(() =>
-        db
-          .select()
-          .from(schema.messages)
-          .where(eq(schema.messages.userId, userId))
-          .orderBy(desc(schema.messages.createdAt))
-          .limit(AI_HISTORY_WINDOW),
-      );
-      const history: ChatMessage[] = recentRows.reverse().map((m) => ({ role: m.role, content: m.content }));
-      // Images live only in this turn's request to the provider — never
-      // written to D1 (see the persisted `storedPrompt` below), so history
-      // rows loaded above are always text-only.
-      const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt, ...(image ? { image } : {}) }];
-
-      const provider = resolveAiProvider(c.env, turnMessages);
-      // Tool-calling (web_search, plus any configured MCP server's tools)
-      // is Gemini/DeepSeek-only, see ai-providers.ts. The model decides
-      // per-turn whether to invoke any tool; offering the declarations
-      // doesn't change behavior for turns that don't need them.
-      const toolCallingSupported = provider instanceof GeminiProvider || provider instanceof DeepSeekProvider;
-      let tools = toolCallingSupported ? [webSearchTool] : [];
-      if (toolCallingSupported && c.env.MCP_SERVER_URL) {
-        try {
-          tools = [...tools, ...(await mcpToolDefinitions(c.env.MCP_SERVER_URL))];
-        } catch {
-          // A misbehaving/unreachable MCP server degrades to web_search
-          // only, rather than failing the whole chat turn.
-        }
-      }
-
-      let generated: { text: string; estimatedUsageUnits: number };
-      try {
-        generated = await provider.generate(turnMessages, tools);
-      } catch (err) {
-        // DeepSeek can fail independently of the app (rate limit, billing —
-        // e.g. a real "Insufficient Balance" seen live in this repo's own
-        // testing). Falling back to Gemini keeps the request working
-        // instead of surfacing a 500 for an external provider outage; only
-        // meaningful when both keys are configured, since DeepSeek is only
-        // ever chosen over Gemini, never instead of Workers AI.
-        if (provider instanceof DeepSeekProvider && c.env.GOOGLE_AI_API_KEY) {
-          generated = await new GeminiProvider(c.env.GOOGLE_AI_API_KEY).generate(turnMessages, tools);
-        } else {
-          throw err;
-        }
-      }
-      const { text, estimatedUsageUnits } = generated;
-
-      const now = Date.now();
-      const storedPrompt = image ? `${prompt} [image attached]` : prompt;
-      await withQuotaGuard(
-        () =>
-          db.insert(schema.messages).values([
-            { id: crypto.randomUUID(), userId, role: "user", content: storedPrompt, createdAt: now },
-            { id: crypto.randomUUID(), userId, role: "assistant", content: text, createdAt: now },
-          ]),
-        "d1_write",
-      );
-      await withQuotaGuard(
-        () =>
-          db
-            .insert(schema.aiUsage)
-            .values({ userId, day, neurons: estimatedUsageUnits })
-            .onConflictDoUpdate({
-              target: [schema.aiUsage.userId, schema.aiUsage.day],
-              set: { neurons: (usage?.neurons ?? 0) + estimatedUsageUnits },
-            }),
-        "d1_write",
-      );
-
+      const { text } = await runChatTurn(c.env, db, userId, prompt, image);
       return c.json({ result: text });
     } catch (err) {
+      if (err instanceof DailyQuotaReachedError) return c.json({ error: "ai_quota_exceeded", message: err.message }, 429);
+      if (err instanceof InvalidImageError) return c.json({ error: "invalid_image", message: err.message }, 400);
       if (err instanceof QuotaExceededError) return degradedResponse(err);
       if (err instanceof VisionUnavailableError) return c.json({ error: "vision_unavailable", message: err.message }, 503);
       throw err;

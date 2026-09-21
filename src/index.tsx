@@ -8,11 +8,12 @@ import { createAiRouter, type AiEnv, PER_USER_DAILY_NEURON_CAP } from "./server/
 import { createR2Router, type R2Env } from "./server/r2";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./server/quota";
 import { reconcileNeuronUsage, type CronEnv } from "./server/cron";
+import { createTelegramRouter, type TelegramEnv } from "./server/telegram";
 import { renderPage } from "./app/render";
 import { Dashboard } from "./app/components/Dashboard";
 import { UserDashboard } from "./app/components/UserDashboard";
 
-export interface Env extends StripeEnv, AiEnv, R2Env, CronEnv {
+export interface Env extends StripeEnv, AiEnv, R2Env, CronEnv, TelegramEnv {
   DB: D1Database;
   CONFIG_KV: KVNamespace;
   API_LIMITER: RateLimit;
@@ -22,6 +23,7 @@ export interface Env extends StripeEnv, AiEnv, R2Env, CronEnv {
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
 }
+
 
 type Variables = { userId: string; db: Db };
 
@@ -71,6 +73,11 @@ app.use("/dashboard", requireSession);
 app.route("/api/stripe", createStripeRouter());
 app.route("/api/ai", createAiRouter());
 app.route("/api/r2", createR2Router());
+// No requireSession: Telegram's webhook has no session cookie. Auth is the
+// X-Telegram-Bot-Api-Secret-Token header check inside the handler itself
+// (src/server/telegram.ts) — a wrong/missing secret is rejected there,
+// before any database access or inference spend.
+app.route("/api/telegram", createTelegramRouter());
 
 // Static content, same HTML for every visitor: safe to edge-cache (TRD §7.4
 // static-route budget, p75 < 50ms). Never add per-user data to this route
