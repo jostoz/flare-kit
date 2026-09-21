@@ -12,7 +12,10 @@ import { schema } from "../db/client";
 export function createAuth(db: Db, env: { AUTH_SECRET: string; GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; GITHUB_CLIENT_ID?: string; GITHUB_CLIENT_SECRET?: string }) {
   return betterAuth({
     secret: env.AUTH_SECRET,
-    database: drizzleAdapter(db, { provider: "sqlite", schema: { user: schema.users, session: schema.sessions } }),
+    database: drizzleAdapter(db, {
+      provider: "sqlite",
+      schema: { user: schema.users, session: schema.sessions, account: schema.accounts, verification: schema.verifications },
+    }),
     emailAndPassword: {
       enabled: true,
       password: {
@@ -37,7 +40,12 @@ export function createAuth(db: Db, env: { AUTH_SECRET: string; GOOGLE_CLIENT_ID?
   });
 }
 
-const PBKDF2_ITERATIONS = 210_000;
+// Cloudflare Workers' WebCrypto hard-caps PBKDF2 at 100,000 iterations
+// (NotSupportedError above that, production-only — wrangler dev and Node
+// both allow higher, which is why this wasn't caught until a live deploy).
+// This is the ceiling, not a tuning choice: OWASP recommends 600k+ for
+// PBKDF2-SHA256, but the platform will not run more than this.
+const PBKDF2_ITERATIONS = 100_000;
 
 /** PBKDF2-SHA256 via WebCrypto — runs on native crypto, not counted as Worker JS CPU time. */
 async function hashPassword(password: string): Promise<string> {

@@ -21,9 +21,33 @@ interface BootstrapResult {
   r2BucketName: string;
 }
 
+// Persisted alongside BootstrapResult in .flare-kit.state.json but never
+// returned from bootstrap() or logged — printing it would defeat the point.
+interface PersistedState extends BootstrapResult {
+  authSecret: string;
+}
+
+function loadExistingAuthSecret(statePath: string): string | undefined {
+  if (!existsSync(statePath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as Partial<PersistedState>;
+    return parsed.authSecret;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 32 random bytes, hex-encoded — reused across reruns so redeploying never invalidates live sessions. */
+function generateAuthSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function bootstrap(opts: { apiToken: string; workerName?: string }): Promise<BootstrapResult> {
   const workerName = opts.workerName ?? "flare-kit-app";
   const cf = new CloudflareClient(opts.apiToken);
+  const statePath = join(import.meta.dir, "..", ".flare-kit.state.json");
+  const authSecret = loadExistingAuthSecret(statePath) ?? generateAuthSecret();
 
   // 1. Verify token.
   const verified = await cf.verifyToken();
@@ -75,7 +99,16 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
       { type: "kv_namespace", name: "CONFIG_KV", namespace_id: kv.id },
       { type: "r2_bucket", name: "ASSETS_BUCKET", bucket_name: r2.name },
       { type: "ai", name: "AI" },
+      { type: "ratelimit", name: "API_LIMITER", namespace_id: "1001", simple: { limit: 100, period: 60 } },
+      { type: "secret_text", name: "AUTH_SECRET", text: authSecret },
     ],
+    // Mirrors wrangler.jsonc's cache.enabled — this raw multipart upload
+    // bypasses `wrangler deploy` entirely, so wrangler.jsonc's cache block
+    // has no effect here unless duplicated in this metadata (TRD §7.4). The
+    // API's field name is `cache_options`, not `cache` — wrangler.jsonc's
+    // `cache` key is Wrangler's own config surface, translated internally;
+    // it is not what this raw multipart request accepts.
+    cache_options: { enabled: true },
   };
   const form = new FormData();
   form.append("metadata", JSON.stringify(metadata));
@@ -91,9 +124,12 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
   const { subdomain } = await cf.getAccountSubdomain(accountId);
   const workerUrl = `https://${workerName}.${subdomain}.workers.dev`;
 
-  // Persist real IDs for reruns / local dev, never the token itself.
+  // Persist real IDs for reruns / local dev, never the API token itself.
+  // authSecret IS persisted here (gitignored) so a rerun reuses it instead
+  // of rotating it and invalidating every live session.
   const state: BootstrapResult = { accountId, workerUrl, d1DatabaseId: d1.uuid, kvNamespaceId: kv.id, r2BucketName: r2.name };
-  await Bun.write(join(import.meta.dir, "..", ".flare-kit.state.json"), JSON.stringify(state, null, 2));
+  const persisted: PersistedState = { ...state, authSecret };
+  await Bun.write(statePath, JSON.stringify(persisted, null, 2));
 
   return state;
 }

@@ -11,7 +11,7 @@ export interface AiEnv {
 const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 // Conservative per-user ceiling against the account-wide 10,000 Neurons/day
 // pool (TRD §3.5). Any single tenant is capped well below the shared total.
-const PER_USER_DAILY_NEURON_CAP = 500;
+export const PER_USER_DAILY_NEURON_CAP = 500;
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
