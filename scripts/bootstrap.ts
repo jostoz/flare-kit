@@ -90,18 +90,36 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
   }
 
   // 7-8. Deploy Worker with bindings pointed at the real resource IDs.
+  const bindings: Array<Record<string, unknown>> = [
+    { type: "d1", name: "DB", id: d1.uuid },
+    { type: "kv_namespace", name: "CONFIG_KV", namespace_id: kv.id },
+    { type: "r2_bucket", name: "ASSETS_BUCKET", bucket_name: r2.name },
+    { type: "ai", name: "AI" },
+    { type: "ratelimit", name: "API_LIMITER", namespace_id: "1001", simple: { limit: 100, period: 60 } },
+    { type: "secret_text", name: "AUTH_SECRET", text: authSecret },
+  ];
+  // Optional providers: only bound if their credentials are present in the
+  // deploy environment, so bootstrap.ts stays runnable without them.
+  // GOOGLE_AI_API_KEY routes /api/ai/chat to Gemini instead of Workers AI
+  // (src/server/ai-providers.ts) — a Google AI Studio key, distinct from
+  // GOOGLE_CLIENT_ID/SECRET below (OAuth login, not inference).
+  if (process.env.GOOGLE_AI_API_KEY) {
+    bindings.push({ type: "secret_text", name: "GOOGLE_AI_API_KEY", text: process.env.GOOGLE_AI_API_KEY });
+  }
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    bindings.push({ type: "plain_text", name: "GOOGLE_CLIENT_ID", text: process.env.GOOGLE_CLIENT_ID });
+    bindings.push({ type: "secret_text", name: "GOOGLE_CLIENT_SECRET", text: process.env.GOOGLE_CLIENT_SECRET });
+  }
+  if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+    bindings.push({ type: "plain_text", name: "GITHUB_CLIENT_ID", text: process.env.GITHUB_CLIENT_ID });
+    bindings.push({ type: "secret_text", name: "GITHUB_CLIENT_SECRET", text: process.env.GITHUB_CLIENT_SECRET });
+  }
+
   const metadata = {
     main_module: "index.js",
     compatibility_date: "2026-09-01",
     compatibility_flags: ["nodejs_compat"],
-    bindings: [
-      { type: "d1", name: "DB", id: d1.uuid },
-      { type: "kv_namespace", name: "CONFIG_KV", namespace_id: kv.id },
-      { type: "r2_bucket", name: "ASSETS_BUCKET", bucket_name: r2.name },
-      { type: "ai", name: "AI" },
-      { type: "ratelimit", name: "API_LIMITER", namespace_id: "1001", simple: { limit: 100, period: 60 } },
-      { type: "secret_text", name: "AUTH_SECRET", text: authSecret },
-    ],
+    bindings,
     // Mirrors wrangler.jsonc's cache.enabled — this raw multipart upload
     // bypasses `wrangler deploy` entirely, so wrangler.jsonc's cache block
     // has no effect here unless duplicated in this metadata (TRD §7.4). The

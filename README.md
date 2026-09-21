@@ -8,7 +8,7 @@ Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `doc
 - **Data:** Cloudflare D1 + Drizzle ORM (`drizzle/migrations/`)
 - **Auth:** Better Auth, sessions in D1, PBKDF2-SHA256 via `crypto.subtle` (never bcrypt/argon2 — TRD §3.1.2)
 - **Payments:** Stripe Checkout + idempotent webhooks
-- **AI:** Workers AI with a per-user daily Neuron quota
+- **AI:** Workers AI by default, Gemini as an opt-in alternative (set `GOOGLE_AI_API_KEY`) — per-user daily usage quota, provider-agnostic (`src/server/ai-providers.ts`)
 - **Files:** R2 with client-direct presigned uploads
 - **Rate limiting:** native `ratelimits` binding (not KV — TRD §0)
 
