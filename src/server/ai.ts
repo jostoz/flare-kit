@@ -3,7 +3,7 @@ import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { schema } from "../db/client";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./quota";
-import { resolveAiProvider, type ChatMessage } from "./ai-providers";
+import { resolveAiProvider, VisionUnavailableError, type ChatMessage } from "./ai-providers";
 
 export interface AiEnv {
   AI: Ai;
@@ -26,6 +26,12 @@ export const PER_USER_DAILY_NEURON_CAP = 500;
 // token budget as a short one; older turns simply fall out of the window.
 export const AI_HISTORY_WINDOW = 10;
 
+// Request-body caps for the optional image attachment: bounds the D1
+// row size indirectly (images are never persisted, see below) and the
+// bytes sent to Gemini per turn. 4M base64 chars ≈ 3MB raw image.
+const MAX_IMAGE_BASE64_CHARS = 4_000_000;
+const ALLOWED_IMAGE_MIME_TYPES = /^image\/(png|jpeg|webp|gif)$/;
+
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -46,7 +52,15 @@ export function createAiRouter() {
         return c.json({ error: "ai_quota_exceeded", message: "Daily AI quota reached for this account." }, 429);
       }
 
-      const { prompt } = await c.req.json<{ prompt: string }>();
+      const { prompt, image } = await c.req.json<{ prompt: string; image?: { mimeType: string; data: string } }>();
+      if (image) {
+        if (!ALLOWED_IMAGE_MIME_TYPES.test(image.mimeType)) {
+          return c.json({ error: "invalid_image", message: "image.mimeType must be image/png, image/jpeg, image/webp, or image/gif." }, 400);
+        }
+        if (image.data.length > MAX_IMAGE_BASE64_CHARS) {
+          return c.json({ error: "invalid_image", message: "Image too large (max ~3MB)." }, 400);
+        }
+      }
 
       const recentRows = await withQuotaGuard(() =>
         db
@@ -57,16 +71,20 @@ export function createAiRouter() {
           .limit(AI_HISTORY_WINDOW),
       );
       const history: ChatMessage[] = recentRows.reverse().map((m) => ({ role: m.role, content: m.content }));
-      const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt }];
+      // Images live only in this turn's request to the provider — never
+      // written to D1 (see the persisted `storedPrompt` below), so history
+      // rows loaded above are always text-only.
+      const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt, ...(image ? { image } : {}) }];
 
       const provider = resolveAiProvider(c.env, turnMessages);
       const { text, estimatedUsageUnits } = await provider.generate(turnMessages);
 
       const now = Date.now();
+      const storedPrompt = image ? `${prompt} [image attached]` : prompt;
       await withQuotaGuard(
         () =>
           db.insert(schema.messages).values([
-            { id: crypto.randomUUID(), userId, role: "user", content: prompt, createdAt: now },
+            { id: crypto.randomUUID(), userId, role: "user", content: storedPrompt, createdAt: now },
             { id: crypto.randomUUID(), userId, role: "assistant", content: text, createdAt: now },
           ]),
         "d1_write",
@@ -86,6 +104,7 @@ export function createAiRouter() {
       return c.json({ result: text });
     } catch (err) {
       if (err instanceof QuotaExceededError) return degradedResponse(err);
+      if (err instanceof VisionUnavailableError) return c.json({ error: "vision_unavailable", message: err.message }, 503);
       throw err;
     }
   });

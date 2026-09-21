@@ -26,6 +26,8 @@
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  /** Vision input for this turn only — never persisted to D1 history (see ai.ts); Gemini-only, see resolveAiProvider. */
+  image?: { mimeType: string; data: string };
 }
 
 export interface AiGenerateResult {
@@ -71,10 +73,13 @@ export class GeminiProvider implements AiProvider {
 
   async generate(messages: ChatMessage[]): Promise<AiGenerateResult> {
     // Gemini's turn role is "model", not "assistant" — the only shape
-    // difference from the internal ChatMessage type.
+    // difference from the internal ChatMessage type. An attached image
+    // becomes an extra `inlineData` part alongside the text part.
     const contents = messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
+      parts: m.image
+        ? [{ text: m.content }, { inlineData: { mimeType: m.image.mimeType, data: m.image.data } }]
+        : [{ text: m.content }],
     }));
 
     const res = await fetch(`${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent`, {
@@ -132,8 +137,27 @@ export function classifyComplexity(messages: ChatMessage[]): "simple" | "complex
  * complex; Workers AI for everything else (including every request when
  * no Gemini key is configured at all — no code change needed to add or
  * remove Gemini from the mix).
+ *
+ * An attached image forces Gemini regardless of complexity: Workers AI's
+ * default model (WORKERS_AI_MODEL, above) is text-only, and swapping the
+ * default model to a heavier vision-capable one would tax every plain-text
+ * request's latency/Neuron cost for a capability most turns don't use.
+ * Vision without a configured Gemini key throws VisionUnavailableError
+ * (caught in ai.ts) rather than silently dropping the image or crashing on
+ * an incompatible model call.
  */
+export class VisionUnavailableError extends Error {
+  constructor() {
+    super("Image input requires GOOGLE_AI_API_KEY to be configured.");
+  }
+}
+
 export function resolveAiProvider(env: { AI: Ai; GOOGLE_AI_API_KEY?: string }, messages: ChatMessage[]): AiProvider {
+  const hasImage = messages.some((m) => m.image);
+  if (hasImage) {
+    if (!env.GOOGLE_AI_API_KEY) throw new VisionUnavailableError();
+    return new GeminiProvider(env.GOOGLE_AI_API_KEY);
+  }
   if (env.GOOGLE_AI_API_KEY && classifyComplexity(messages) === "complex") {
     return new GeminiProvider(env.GOOGLE_AI_API_KEY);
   }

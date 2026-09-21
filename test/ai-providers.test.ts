@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveAiProvider, classifyComplexity, WorkersAiProvider, GeminiProvider, type ChatMessage } from "../src/server/ai-providers";
+import { resolveAiProvider, classifyComplexity, WorkersAiProvider, GeminiProvider, VisionUnavailableError, type ChatMessage } from "../src/server/ai-providers";
 
 const simple: ChatMessage[] = [{ role: "user", content: "Hi there!" }];
 const complex: ChatMessage[] = [{ role: "user", content: "Explain step-by-step how to refactor this function for performance." }];
@@ -41,5 +41,16 @@ describe("resolveAiProvider", () => {
   it("routes to Gemini for a complex prompt when GOOGLE_AI_API_KEY is set", () => {
     const provider = resolveAiProvider({ AI: {} as Ai, GOOGLE_AI_API_KEY: "test-key" }, complex);
     expect(provider).toBeInstanceOf(GeminiProvider);
+  });
+
+  it("routes a simple prompt with an image to Gemini when GOOGLE_AI_API_KEY is set", () => {
+    const withImage: ChatMessage[] = [{ role: "user", content: "What is this?", image: { mimeType: "image/png", data: "abc123" } }];
+    const provider = resolveAiProvider({ AI: {} as Ai, GOOGLE_AI_API_KEY: "test-key" }, withImage);
+    expect(provider).toBeInstanceOf(GeminiProvider);
+  });
+
+  it("throws VisionUnavailableError for an image when GOOGLE_AI_API_KEY is unset", () => {
+    const withImage: ChatMessage[] = [{ role: "user", content: "What is this?", image: { mimeType: "image/png", data: "abc123" } }];
+    expect(() => resolveAiProvider({ AI: {} as Ai }, withImage)).toThrow(VisionUnavailableError);
   });
 });
