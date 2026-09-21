@@ -7,13 +7,14 @@
  * Usage: bun run scripts/bench-ttfb.ts [url]
  *   url defaults to the workerUrl recorded in .flare-kit.state.json.
  *
- * Known gap (documented, not silently papered over): GET "/" satisfies
- * neither TRD §7.4 budget today. It has no Cache-Control header, so it is
- * not the "static/edge-cached, p75 < 50ms" case; it also builds a Db client
- * per request but never queries D1, so it is not the "dynamic-with-D1,
- * p75 < 200ms" case either. This script reports the raw p75 across regions
- * without asserting pass/fail against either budget — add a Cache-Control
- * policy or a real D1-backed GET route before wiring a budget gate here.
+ * `Cache-Control` is checked dynamically against a live request (never a
+ * hardcoded claim). No pass/fail is ever asserted: TRD §7.4's budgets
+ * measure Cloudflare's own edge-compute/cache-serve time, and
+ * check-host.net's nodes are budget VPS instances whose own transit
+ * latency to whichever Cloudflare PoP they reach regularly exceeds the
+ * 50ms static-route budget on its own, regardless of how fast the edge
+ * responds — a pass/fail gate on this number would produce false failures
+ * on a correctly configured, warm-cached route.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -138,20 +139,29 @@ async function main() {
     console.log("Note: fewer than the requested region count responded; p75 above is based on a smaller sample.");
   }
 
-  // Neither TRD §7.4 budget cleanly applies to GET "/" today: it has no
-  // Cache-Control (so it's not the "static/edge-cached, p75 < 50ms" case),
-  // and it never queries D1 despite constructing a Db client per request
-  // (so it's not the "dynamic with D1, p75 < 200ms" case either). Report
-  // the measurement without asserting a pass/fail against a budget this
-  // route doesn't qualify for — a real dynamic-with-D1 route is needed
-  // before that assertion is meaningful.
+  // Check the route's actual Cache-Control instead of asserting a fixed
+  // claim — this script was wrong once already (claimed "no Cache-Control"
+  // after a Cache-Control header had already shipped) because the message
+  // was hardcoded rather than derived from a live check.
+  const headerCheck = await fetch(targetUrl, { method: "HEAD" });
+  const cacheControl = headerCheck.headers.get("cache-control");
+  const isPubliclyCached = cacheControl?.includes("public") && cacheControl.includes("max-age");
+
+  // Reference only, never pass/fail: TRD §7.4's budgets are about
+  // Cloudflare's own edge-compute/cache-serve time, not full client-to-edge
+  // network RTT. check-host.net's nodes are budget VPS instances with their
+  // own transit latency to whichever Cloudflare PoP they reach — that
+  // latency alone regularly exceeds 50ms from some regions regardless of
+  // how fast the edge itself responds, so asserting pass/fail against it
+  // produces false failures on a correctly configured, warm-cached route.
+  const budgetLabel = isPubliclyCached
+    ? `static/cached budget applies: p75 < 50ms (TRD §7.4) — reference only, see note below`
+    : `neither TRD §7.4 budget applies to this response shape`;
+  console.log(`\nCache-Control: ${cacheControl ?? "(none)"} — ${budgetLabel}`);
+  console.log(`p75 TTFB: ${p75}ms`);
   console.log(
-    "\nNeither TRD §7.4 budget applies cleanly: \"/\" has no Cache-Control (not edge-cached) and never queries D1 (not the dynamic-with-D1 case).",
+    "\nNo pass/fail assertion made: this measures full check-host.net-VPS-to-edge network transit, not server-side compute time, and TRD's budgets are about the latter. TRD §3.1.1 measured server-side SSR render alone at 1.57ms p50 / 2.84ms p99 — the number above is dominated by network path, not Worker execution.",
   );
-  console.log(
-    `For reference — static/cached budget: p75 < 50ms | dynamic-with-D1 budget: p75 < 200ms | measured: ${p75}ms (includes check-host.net VPS-to-edge network transit, not just server-side time; TRD §3.1.1 measured server-side SSR render alone at 1.57ms p50 / 2.84ms p99).`,
-  );
-  console.log("\nNo pass/fail assertion made — add a real Cache-Control policy or a D1-backed route before wiring this into a budget gate.");
 }
 
 main().catch((err) => {

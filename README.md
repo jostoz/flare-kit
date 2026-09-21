@@ -36,9 +36,9 @@ CLOUDFLARE_API_TOKEN=... bun run teardown  # tears down what bootstrap created
 - `bun run budget:check` — passes at 66.7% D1 read/write, 33.3% Workers requests, projected at 5,000 MAU.
 - `wrangler deploy --dry-run` — builds clean with all 7 bindings; **600 KB gzip**, under the 1 MB budget.
 - Live `bootstrap.ts` roundtrip against the real Cloudflare REST API — deployed to `https://flare-kit-app.jostoztado.workers.dev`.
-- Full auth loop live: sign-up → sign-in → authenticated `GET /dashboard` (real D1 query: `users` + `ai_usage`) — HTTP 200 end-to-end with a real session cookie. This was **never exercised before**; fixing it surfaced four separate pre-existing bugs, all fixed and verified live (see below).
+- Full auth loop live: sign-up → sign-in → authenticated `GET /dashboard` (real D1 query: `users` + `ai_usage`) — HTTP 200 end-to-end with a real session cookie. This was **never exercised before**; fixing it surfaced four separate pre-existing bugs, all fixed and verified live (see below). Re-tested with 4 additional fresh sign-ups after the fixes — all 200, no flakiness.
 - `GET /` edge-caching (TRD §7.4): `Cache-Control: public, max-age=60` + Workers Caching enabled (`cache_options` in the deploy metadata — the field name differs from `wrangler.jsonc`'s `cache` key; the raw multipart API doesn't read `wrangler.jsonc` at all). `Cf-Cache-Status` confirmed `MISS` → `HIT` on a second request.
-- `bun run bench:ttfb` (TRD §7.4) — p75 373ms across 5 regions before the cache fix; not re-measured warm since the Worker version (part of the cache key) changes on every fix in this session. `GET /dashboard` and `/api/*` are defended with `Cache-Control: private, no-store` (belt-and-suspenders against Cloudflare's 2-hour heuristic-freshness default once caching is enabled) — confirmed `Cf-Cache-Status: BYPASS`.
+- `bun run bench:ttfb` (TRD §7.4) — p75 131ms across 5 regions, warm cache (`Cf-Cache-Status: HIT`). The script checks `Cache-Control` dynamically now (it used to hardcode a claim that went stale the moment caching shipped) but asserts no pass/fail: this number is dominated by check-host.net's budget-VPS-to-edge network transit, not Cloudflare's server-side compute time, which is what TRD §7.4 actually budgets — a real regression there would need `Server-Timing` or a similar edge-side measurement, not an external network probe. `GET /dashboard` and `/api/*` are defended with `Cache-Control: private, no-store` (belt-and-suspenders against Cloudflare's 2-hour heuristic-freshness default once caching is enabled) — confirmed `Cf-Cache-Status: BYPASS`.
 
 ## Bugs found and fixed while wiring the first real authenticated route
 
@@ -52,7 +52,6 @@ All four were live, pre-existing, and silent — nothing exercised `/dashboard` 
 ## Not verified in this environment
 
 - `wrangler dev --remote` `cpuTime` reading — needs a live Cloudflare session; the committed CPU test is a coarse local smoke test, not this authoritative measurement (TRD §7.1).
-- The `bootstrap.ts` sign-up flow returns `422 FAILED_TO_CREATE_USER` on first sign-up even though the underlying `users`/`accounts`/`sessions` rows are written correctly and a subsequent `sign-in` with the same credentials succeeds (200, valid session). Root cause not yet isolated — worth investigating before relying on the sign-up endpoint's response status.
 
 ## Deviation from the original plan
 
