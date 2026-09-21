@@ -42,7 +42,7 @@ export class WorkersAiProvider implements AiProvider {
   }
 }
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash"; // gemini-2.5-flash was retired for new accounts; confirmed live against a real key.
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 interface GeminiResponse {
