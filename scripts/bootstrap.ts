@@ -106,6 +106,29 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
   if (process.env.GOOGLE_AI_API_KEY) {
     bindings.push({ type: "secret_text", name: "GOOGLE_AI_API_KEY", text: process.env.GOOGLE_AI_API_KEY });
   }
+  // DEEPSEEK_API_KEY (opt-in): preferred over GOOGLE_AI_API_KEY for the
+  // complex text tier — cheaper per token, no aggressive rate limit (see
+  // src/server/ai-providers.ts). Vision stays Gemini-only regardless.
+  if (process.env.DEEPSEEK_API_KEY) {
+    bindings.push({ type: "secret_text", name: "DEEPSEEK_API_KEY", text: process.env.DEEPSEEK_API_KEY });
+  }
+  // MCP_SERVER_URL (opt-in): a single remote MCP server whose tools are
+  // exposed to the chat tool-calling loop alongside web_search (see
+  // src/server/mcp.ts). Not a secret — a public server URL.
+  if (process.env.MCP_SERVER_URL) {
+    bindings.push({ type: "plain_text", name: "MCP_SERVER_URL", text: process.env.MCP_SERVER_URL });
+  }
+  // TRD §3.5 daily Neuron reconciliation cron (src/server/cron.ts).
+  // CF_ACCOUNT_ID reuses the accountId already resolved above — the
+  // running Worker needs to know its own account to query the GraphQL
+  // Analytics API. CF_ANALYTICS_API_TOKEN is opt-in and deliberately NOT
+  // reused from CLOUDFLARE_API_TOKEN (this script's own deploy token,
+  // which has far broader permissions than a Worker should ever hold) —
+  // supply a separate, narrowly-scoped Account Analytics:Read token.
+  bindings.push({ type: "plain_text", name: "CF_ACCOUNT_ID", text: accountId });
+  if (process.env.CF_ANALYTICS_API_TOKEN) {
+    bindings.push({ type: "secret_text", name: "CF_ANALYTICS_API_TOKEN", text: process.env.CF_ANALYTICS_API_TOKEN });
+  }
   if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     bindings.push({ type: "plain_text", name: "GOOGLE_CLIENT_ID", text: process.env.GOOGLE_CLIENT_ID });
     bindings.push({ type: "secret_text", name: "GOOGLE_CLIENT_SECRET", text: process.env.GOOGLE_CLIENT_SECRET });

@@ -7,11 +7,12 @@ import { createStripeRouter, type StripeEnv } from "./server/stripe";
 import { createAiRouter, type AiEnv, PER_USER_DAILY_NEURON_CAP } from "./server/ai";
 import { createR2Router, type R2Env } from "./server/r2";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./server/quota";
+import { reconcileNeuronUsage, type CronEnv } from "./server/cron";
 import { renderPage } from "./app/render";
 import { Dashboard } from "./app/components/Dashboard";
 import { UserDashboard } from "./app/components/UserDashboard";
 
-export interface Env extends StripeEnv, AiEnv, R2Env {
+export interface Env extends StripeEnv, AiEnv, R2Env, CronEnv {
   DB: D1Database;
   CONFIG_KV: KVNamespace;
   API_LIMITER: RateLimit;
@@ -127,4 +128,10 @@ async function requireSession(c: Context<{ Bindings: Env; Variables: Variables }
   await next();
 }
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    const db = createDb(env.DB);
+    ctx.waitUntil(reconcileNeuronUsage(env, db));
+  },
+};

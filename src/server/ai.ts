@@ -3,12 +3,18 @@ import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { schema } from "../db/client";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./quota";
-import { resolveAiProvider, VisionUnavailableError, type ChatMessage } from "./ai-providers";
+import { resolveAiProvider, GeminiProvider, DeepSeekProvider, VisionUnavailableError, type ChatMessage } from "./ai-providers";
+import { webSearchTool } from "./tools";
+import { mcpToolDefinitions } from "./mcp";
 
 export interface AiEnv {
   AI: Ai;
-  /** Opt-in: routes inference to Gemini instead of Workers AI when set. See src/server/ai-providers.ts. */
+  /** Opt-in: routes complex-tier inference to Gemini instead of Workers AI when set. See src/server/ai-providers.ts. */
   GOOGLE_AI_API_KEY?: string;
+  /** Opt-in: preferred over GOOGLE_AI_API_KEY for the complex text tier (cheaper per token, no aggressive rate limit). Vision stays Gemini-only regardless. */
+  DEEPSEEK_API_KEY?: string;
+  /** Opt-in: a single remote MCP server URL (Streamable HTTP transport) whose tools are exposed to the chat tool-calling loop alongside web_search. See src/server/mcp.ts. */
+  MCP_SERVER_URL?: string;
 }
 
 // Conservative per-user ceiling against the shared daily inference budget
@@ -77,7 +83,38 @@ export function createAiRouter() {
       const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt, ...(image ? { image } : {}) }];
 
       const provider = resolveAiProvider(c.env, turnMessages);
-      const { text, estimatedUsageUnits } = await provider.generate(turnMessages);
+      // Tool-calling (web_search, plus any configured MCP server's tools)
+      // is Gemini/DeepSeek-only, see ai-providers.ts. The model decides
+      // per-turn whether to invoke any tool; offering the declarations
+      // doesn't change behavior for turns that don't need them.
+      const toolCallingSupported = provider instanceof GeminiProvider || provider instanceof DeepSeekProvider;
+      let tools = toolCallingSupported ? [webSearchTool] : [];
+      if (toolCallingSupported && c.env.MCP_SERVER_URL) {
+        try {
+          tools = [...tools, ...(await mcpToolDefinitions(c.env.MCP_SERVER_URL))];
+        } catch {
+          // A misbehaving/unreachable MCP server degrades to web_search
+          // only, rather than failing the whole chat turn.
+        }
+      }
+
+      let generated: { text: string; estimatedUsageUnits: number };
+      try {
+        generated = await provider.generate(turnMessages, tools);
+      } catch (err) {
+        // DeepSeek can fail independently of the app (rate limit, billing —
+        // e.g. a real "Insufficient Balance" seen live in this repo's own
+        // testing). Falling back to Gemini keeps the request working
+        // instead of surfacing a 500 for an external provider outage; only
+        // meaningful when both keys are configured, since DeepSeek is only
+        // ever chosen over Gemini, never instead of Workers AI.
+        if (provider instanceof DeepSeekProvider && c.env.GOOGLE_AI_API_KEY) {
+          generated = await new GeminiProvider(c.env.GOOGLE_AI_API_KEY).generate(turnMessages, tools);
+        } else {
+          throw err;
+        }
+      }
+      const { text, estimatedUsageUnits } = generated;
 
       const now = Date.now();
       const storedPrompt = image ? `${prompt} [image attached]` : prompt;

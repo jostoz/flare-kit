@@ -129,3 +129,20 @@ export const messages = sqliteTable(
     userCreatedIdx: index("messages_user_created_idx").on(t.userId, t.createdAt),
   }),
 );
+
+// Daily Neuron-usage reconciliation (TRD §3.5): the per-request
+// `ai_usage.neurons` figure written in src/server/ai.ts is a cheap
+// character-count approximation (see estimateUsageUnits in
+// ai-providers.ts), computed inline on the hot path with no extra
+// subrequest. This table holds the *real* per-day totals pulled from
+// Cloudflare's GraphQL Analytics API by the Cron Trigger (src/server/cron.ts)
+// so the approximation's drift is visible and auditable, without paying
+// the analytics API's latency on every chat request.
+export const neuronCalibration = sqliteTable("neuron_calibration", {
+  day: text("day").primaryKey(), // YYYY-MM-DD (UTC)
+  estimatedNeurons: integer("estimated_neurons").notNull(), // sum(ai_usage.neurons) for that day
+  realRequestCount: integer("real_request_count").notNull(), // aiInferenceAdaptiveGroups.count
+  realInputTokens: integer("real_input_tokens").notNull(),
+  realOutputTokens: integer("real_output_tokens").notNull(),
+  reconciledAt: integer("reconciled_at").notNull(),
+});
