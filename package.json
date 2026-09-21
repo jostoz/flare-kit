@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "budget:cpu": "vitest run test/budget.cpu.test.tsx",
+    "budget:cpu:live": "bun run scripts/budget-cpu-live.ts",
     "budget:check": "bun run scripts/budget-check.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply flare-kit-db --local",

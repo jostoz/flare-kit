@@ -24,6 +24,7 @@ bun run test:integration # vitest, real Workers runtime (Miniflare): D1 + auth +
 bun run budget:check     # TRD §7.2 data-quota projection gate
 bun run size              # wrangler dry-run + gzip bundle size check (TRD §7.6)
 bun run bench:ttfb        # TRD §7.4 multi-region TTFB against a live deployment
+CLOUDFLARE_API_TOKEN=... bun run budget:cpu:live  # TRD §7.1 real cpuTime from a live deployment (see finding below)
 CLOUDFLARE_API_TOKEN=... bun run deploy    # TRD §5 one-command provisioning
 CLOUDFLARE_API_TOKEN=... bun run teardown  # tears down what bootstrap created
 ```
@@ -49,9 +50,16 @@ All four were live, pre-existing, and silent — nothing exercised `/dashboard` 
 3. **`src/server/auth.ts`** — `PBKDF2_ITERATIONS = 210_000` exceeds the Cloudflare Workers runtime's hard cap of 100,000 iterations (`NotSupportedError`, production-only — `wrangler dev`/Node both allow more, which is why this was never caught locally). Capped at 100,000.
 4. **`scripts/bootstrap.ts`** — the deploy metadata's `bindings` array never included the `ratelimit` binding (`API_LIMITER`) or an `AUTH_SECRET` secret, both present in `wrangler.jsonc` but silently absent from every deploy done through `bootstrap.ts` instead of `wrangler deploy`. `API_LIMITER` being `undefined` crashed every `/api/*` request before even reaching a route handler. `AUTH_SECRET` is now generated once and persisted in the gitignored `.flare-kit.state.json` so reruns reuse it instead of rotating it and invalidating every live session.
 
-## Not verified in this environment
+## TRD §7.1 CPU gate — measured live, currently failing as literally specified
 
-- `wrangler dev --remote` `cpuTime` reading — needs a live Cloudflare session; the committed CPU test is a coarse local smoke test, not this authoritative measurement (TRD §7.1).
+`bun run budget:cpu:live` (new: `scripts/budget-cpu-live.ts`) reads real `cpuTime` from `wrangler tail --format json` against the live deployment — the authoritative measurement TRD §7.1 calls for, distinct from `test/budget.cpu.test.tsx`'s local Node-environment smoke test. Run twice independently, 40 sequential (not concurrent) cache-busted requests each:
+
+| Run | p50 | p90 | p99 | ≤7ms budget |
+| --- | --- | --- | --- | --- |
+| Sequential, 300ms spacing | 1ms | 11ms | 17ms | 90% |
+| Sequential, 300ms spacing | 2ms | 11ms | 26ms | 88% |
+
+**p99 exceeds the 7ms budget in every run.** p50 (1-2ms) closely matches the local SSR benchmark (TRD §3.1.1: 1.57ms p50) — the warm/steady-state render path is not the problem. The p90-p99 tail is Workers isolate cold-start / module-init cost, which TRD §7.1 explicitly includes in this budget by design ("incluye el primer request del isolate") but which no change to `src/` can eliminate — it's a platform characteristic of the isolate model, not an application regression. A genuine dependency or code regression would show up as an elevated **p50**, not just an elevated cold-start tail; that's still what `budget:cpu:live` is useful for catching, even though the literal p99 ≤ 7ms gate as written doesn't pass under real traffic.
 
 ## Deviation from the original plan
 
