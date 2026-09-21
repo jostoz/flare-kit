@@ -108,3 +108,24 @@ export const aiUsage = sqliteTable(
     pk: uniqueIndex("ai_usage_user_day_idx").on(t.userId, t.day),
   }),
 );
+
+// Conversation memory for /api/ai/chat. Read as a bounded sliding window
+// (last N rows per user, see AI_HISTORY_WINDOW in ai.ts) — never the full
+// history — so token cost per request stays flat regardless of how long a
+// conversation runs. This is the same "retrieve only what's needed, don't
+// stuff the full history into context" principle Cloudflare's own (private
+// beta, waitlisted) Agent Memory product uses; implemented by hand here
+// since that product isn't generally available.
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    role: text("role", { enum: ["user", "assistant"] }).notNull(),
+    content: text("content").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    userCreatedIdx: index("messages_user_created_idx").on(t.userId, t.createdAt),
+  }),
+);

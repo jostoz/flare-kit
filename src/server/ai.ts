@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { schema } from "../db/client";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./quota";
-import { resolveAiProvider } from "./ai-providers";
+import { resolveAiProvider, type ChatMessage } from "./ai-providers";
 
 export interface AiEnv {
   AI: Ai;
@@ -16,6 +16,15 @@ export interface AiEnv {
 // rate limit) — provider-agnostic, see ai-providers.ts. Any single tenant
 // is capped well below the shared total.
 export const PER_USER_DAILY_NEURON_CAP = 500;
+
+// Sliding window, not full history: bounds both the D1 read cost (TRD
+// §2.1 PER_REQUEST_BUDGET.d1RowsRead) and the tokens sent to the model on
+// every turn — the same "retrieve only what's needed" principle
+// Cloudflare's own Agent Memory product uses (private beta; see
+// docs/adding-a-route.md), implemented by hand here since that product
+// isn't generally available. A longer conversation costs the same per-turn
+// token budget as a short one; older turns simply fall out of the window.
+export const AI_HISTORY_WINDOW = 10;
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -38,9 +47,30 @@ export function createAiRouter() {
       }
 
       const { prompt } = await c.req.json<{ prompt: string }>();
-      const provider = resolveAiProvider(c.env);
-      const { text, estimatedUsageUnits } = await provider.generate(prompt);
 
+      const recentRows = await withQuotaGuard(() =>
+        db
+          .select()
+          .from(schema.messages)
+          .where(eq(schema.messages.userId, userId))
+          .orderBy(desc(schema.messages.createdAt))
+          .limit(AI_HISTORY_WINDOW),
+      );
+      const history: ChatMessage[] = recentRows.reverse().map((m) => ({ role: m.role, content: m.content }));
+      const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt }];
+
+      const provider = resolveAiProvider(c.env);
+      const { text, estimatedUsageUnits } = await provider.generate(turnMessages);
+
+      const now = Date.now();
+      await withQuotaGuard(
+        () =>
+          db.insert(schema.messages).values([
+            { id: crypto.randomUUID(), userId, role: "user", content: prompt, createdAt: now },
+            { id: crypto.randomUUID(), userId, role: "assistant", content: text, createdAt: now },
+          ]),
+        "d1_write",
+      );
       await withQuotaGuard(
         () =>
           db

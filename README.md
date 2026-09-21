@@ -8,7 +8,7 @@ Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `doc
 - **Data:** Cloudflare D1 + Drizzle ORM (`drizzle/migrations/`)
 - **Auth:** Better Auth, sessions in D1, PBKDF2-SHA256 via `crypto.subtle` (never bcrypt/argon2 — TRD §3.1.2)
 - **Payments:** Stripe Checkout + idempotent webhooks
-- **AI:** Workers AI by default, Gemini as an opt-in alternative (set `GOOGLE_AI_API_KEY`) — per-user daily usage quota, provider-agnostic (`src/server/ai-providers.ts`)
+- **AI:** Workers AI by default, Gemini as an opt-in alternative (set `GOOGLE_AI_API_KEY`) — per-user daily usage quota, sliding-window conversation memory in D1 (last 10 turns, not full history), provider-agnostic (`src/server/ai-providers.ts`)
 - **Files:** R2 with client-direct presigned uploads
 - **Rate limiting:** native `ratelimits` binding (not KV — TRD §0)
 
@@ -42,6 +42,7 @@ CLOUDFLARE_API_TOKEN=... bun run teardown  # tears down what bootstrap created
 - `bun run bench:ttfb` (TRD §7.4) — p75 131ms across 5 regions, warm cache (`Cf-Cache-Status: HIT`). The script checks `Cache-Control` dynamically now (it used to hardcode a claim that went stale the moment caching shipped) but asserts no pass/fail: this number is dominated by check-host.net's budget-VPS-to-edge network transit, not Cloudflare's server-side compute time, which is what TRD §7.4 actually budgets — a real regression there would need `Server-Timing` or a similar edge-side measurement, not an external network probe. `GET /dashboard` and `/api/*` are defended with `Cache-Control: private, no-store` (belt-and-suspenders against Cloudflare's 2-hour heuristic-freshness default once caching is enabled) — confirmed `Cf-Cache-Status: BYPASS`.
 - Gemini AI provider live: `POST /api/ai/chat` with `GOOGLE_AI_API_KEY` set — HTTP 200 with a real generated response, `ai_usage` quota row written from Gemini's actual `usageMetadata.totalTokenCount` (not the character-count estimate used for Workers AI). Caught one real bug in the process: `gemini-2.5-flash` was retired for new accounts (404, "no longer available to new users") — updated to `gemini-3.6-flash` in `src/server/ai-providers.ts`.
 - Workers AI provider live (temporarily redeployed without `GOOGLE_AI_API_KEY` to exercise the default path, then redeployed with it again — production runs Gemini): `POST /api/ai/chat` — HTTP 200, `ai_usage` quota row written. Both providers now confirmed working end-to-end, not just typechecked.
+- Conversation memory live: two-turn exchange (`"My favorite color is teal"` → `"What is my favorite color?"`) — the model correctly answered "teal" on the second turn, proving `messages` (D1, `src/db/schema.ts`) round-trips through both providers' native chat formats (`ai-providers.ts`), not a stateless prompt each time. `budget:check` updated from a flat per-request D1-write assumption to a route-mix weighted model (`budget.config.ts`) after the naive flat model failed the gate at 100% D1 write quota — the flat model applied the chat route's 3-row write cost to every dynamic request, which no real traffic mix does.
 
 ## Bugs found and fixed while wiring the first real authenticated route
 

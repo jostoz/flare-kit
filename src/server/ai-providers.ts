@@ -15,7 +15,18 @@
  * `ai_usage.neurons` column and PER_USER_DAILY_NEURON_CAP apply to both,
  * as an approximate per-user throttle reconciled later — not a claim that
  * Gemini tokens and Cloudflare Neurons are the same unit.
+ *
+ * `generate` takes the full turn history (already windowed by the caller —
+ * see AI_HISTORY_WINDOW in ai.ts), not a single prompt: conversation memory
+ * requires the model to see prior turns, and both providers' native chat
+ * formats (Workers AI's `messages`, Gemini's `contents`) are built for
+ * exactly this rather than string concatenation.
  */
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
 
 export interface AiGenerateResult {
   text: string;
@@ -23,7 +34,12 @@ export interface AiGenerateResult {
 }
 
 export interface AiProvider {
-  generate(prompt: string): Promise<AiGenerateResult>;
+  generate(messages: ChatMessage[]): Promise<AiGenerateResult>;
+}
+
+function estimateUsageUnits(messages: ChatMessage[]): number {
+  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  return Math.ceil(totalChars / 4 / 10) + 5;
 }
 
 const WORKERS_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct";
@@ -32,13 +48,12 @@ const MAX_OUTPUT_TOKENS = 256;
 export class WorkersAiProvider implements AiProvider {
   constructor(private readonly ai: Ai) {}
 
-  async generate(prompt: string): Promise<AiGenerateResult> {
-    const result = await this.ai.run(WORKERS_AI_MODEL, { prompt, max_tokens: MAX_OUTPUT_TOKENS });
+  async generate(messages: ChatMessage[]): Promise<AiGenerateResult> {
+    const result = await this.ai.run(WORKERS_AI_MODEL, { messages, max_tokens: MAX_OUTPUT_TOKENS });
     const text = "response" in result && typeof result.response === "string" ? result.response : "";
     // Neuron accounting is approximate here; reconciled nightly against the
     // GraphQL Analytics API by the cron in TRD §3.5.
-    const estimatedUsageUnits = Math.ceil(prompt.length / 4 / 10) + 5;
-    return { text, estimatedUsageUnits };
+    return { text, estimatedUsageUnits: estimateUsageUnits(messages) };
   }
 }
 
@@ -54,14 +69,18 @@ interface GeminiResponse {
 export class GeminiProvider implements AiProvider {
   constructor(private readonly apiKey: string) {}
 
-  async generate(prompt: string): Promise<AiGenerateResult> {
+  async generate(messages: ChatMessage[]): Promise<AiGenerateResult> {
+    // Gemini's turn role is "model", not "assistant" — the only shape
+    // difference from the internal ChatMessage type.
+    const contents = messages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
     const res = await fetch(`${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS },
-      }),
+      body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS } }),
     });
 
     const body = (await res.json()) as GeminiResponse;
@@ -75,7 +94,7 @@ export class GeminiProvider implements AiProvider {
     // that these are Neurons.
     const estimatedUsageUnits = body.usageMetadata?.totalTokenCount
       ? Math.ceil(body.usageMetadata.totalTokenCount / 10)
-      : Math.ceil(prompt.length / 4 / 10) + 5;
+      : estimateUsageUnits(messages);
 
     return { text, estimatedUsageUnits };
   }
