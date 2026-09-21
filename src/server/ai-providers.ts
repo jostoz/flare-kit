@@ -199,42 +199,41 @@ export class GeminiProvider implements AiProvider {
 }
 
 /**
- * DeepSeek (opt-in via DEEPSEEK_API_KEY): OpenAI-compatible chat-completions
- * REST API, chosen as the preferred "complex" escalation tier over Gemini
- * when configured — DeepSeek's per-token pricing (deepseek-chat, ~$0.28/1M
- * input, ~$0.42/1M output as of this writing) is a fraction of Gemini's
- * paid tier and its free tier has no aggressive per-minute rate limit to
- * fight in testing/production. Text-only: vision stays Gemini-specific
- * (see resolveAiProvider) since DeepSeek's standard chat model has no
- * public multimodal endpoint.
+ * Shared implementation for any OpenAI-compatible chat-completions REST
+ * API (DeepSeek, OpenRouter, and — by construction — anything else that
+ * speaks the same `/chat/completions` shape). Subclasses only supply a
+ * base URL, model id, and auth header; the request/response shape, the
+ * tool-calling loop, and the exhausted-loop fallback are identical across
+ * providers, so they're written once here instead of copy-pasted per
+ * provider like GeminiProvider's non-OpenAI-shaped API required.
  */
-const DEEPSEEK_MODEL = "deepseek-chat";
-const DEEPSEEK_API_BASE = "https://api.deepseek.com/chat/completions";
-
-interface DeepSeekToolCall {
+interface OpenAiToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
 }
 
-interface DeepSeekMessage {
+interface OpenAiChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
-  tool_calls?: DeepSeekToolCall[];
+  tool_calls?: OpenAiToolCall[];
   tool_call_id?: string;
 }
 
-interface DeepSeekResponse {
-  choices?: Array<{ message?: DeepSeekMessage }>;
+interface OpenAiChatResponse {
+  choices?: Array<{ message?: OpenAiChatMessage }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   error?: { message?: string };
 }
 
-export class DeepSeekProvider implements AiProvider {
-  constructor(private readonly apiKey: string) {}
+abstract class OpenAiCompatibleProvider implements AiProvider {
+  protected abstract readonly apiBase: string;
+  protected abstract readonly model: string;
+  protected abstract readonly providerName: string;
+  protected abstract authHeaders(): Record<string, string>;
 
   async generate(messages: ChatMessage[], tools: ToolDefinition[] = []): Promise<AiGenerateResult> {
-    let apiMessages: DeepSeekMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
+    let apiMessages: OpenAiChatMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
     const toolsPayload = tools.length
       ? tools.map((t) => ({ type: "function" as const, function: { name: t.name, description: t.description, parameters: t.parameters } }))
       : undefined;
@@ -243,15 +242,15 @@ export class DeepSeekProvider implements AiProvider {
     let lastToolResult: string | undefined;
 
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      const res = await fetch(DEEPSEEK_API_BASE, {
+      const res = await fetch(this.apiBase, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-        body: JSON.stringify({ model: DEEPSEEK_MODEL, messages: apiMessages, tools: toolsPayload, max_tokens: MAX_OUTPUT_TOKENS }),
+        headers: { "content-type": "application/json", ...this.authHeaders() },
+        body: JSON.stringify({ model: this.model, messages: apiMessages, tools: toolsPayload, max_tokens: MAX_OUTPUT_TOKENS }),
       });
 
-      const body = (await res.json()) as DeepSeekResponse;
+      const body = (await res.json()) as OpenAiChatResponse;
       if (!res.ok) {
-        throw new Error(`DeepSeek API error (${res.status}): ${body.error?.message ?? "unknown error"}`);
+        throw new Error(`${this.providerName} API error (${res.status}): ${body.error?.message ?? "unknown error"}`);
       }
 
       totalUsageUnits += body.usage?.total_tokens ? Math.ceil(body.usage.total_tokens / 10) : 0;
@@ -276,6 +275,59 @@ export class DeepSeekProvider implements AiProvider {
     }
 
     return { text: lastToolResult ?? "", estimatedUsageUnits: totalUsageUnits };
+  }
+}
+
+/**
+ * DeepSeek (opt-in via DEEPSEEK_API_KEY): DeepSeek's per-token pricing
+ * (deepseek-chat, ~$0.28/1M input, ~$0.42/1M output as of this writing) is
+ * a fraction of Gemini's paid tier and its free tier has no aggressive
+ * per-minute rate limit to fight in testing/production. Text-only: vision
+ * stays Gemini-specific (see resolveAiProvider) since DeepSeek's standard
+ * chat model has no public multimodal endpoint.
+ */
+export class DeepSeekProvider extends OpenAiCompatibleProvider {
+  protected readonly apiBase = "https://api.deepseek.com/chat/completions";
+  protected readonly model = "deepseek-chat";
+  protected readonly providerName = "DeepSeek";
+
+  constructor(private readonly apiKey: string) {
+    super();
+  }
+
+  protected authHeaders() {
+    return { authorization: `Bearer ${this.apiKey}` };
+  }
+}
+
+/**
+ * OpenRouter (opt-in via OPENROUTER_API_KEY): a single OpenAI-compatible
+ * endpoint that proxies dozens of upstream model providers — useful as a
+ * fallback when a direct provider (Gemini, DeepSeek) is rate-limited or
+ * unfunded, since it's a completely independent quota/billing pool.
+ * Preferred first in the complex-tier chain (see resolveAiProvider) for
+ * exactly that reason: it's the option most likely to actually be
+ * available. `openai/gpt-4o-mini` — confirmed live to return proper
+ * OpenAI-shaped `tool_calls` (`finish_reason: "tool_calls"`) at
+ * ~$0.00002/request. Two cheaper alternatives were tried and rejected
+ * live first: OpenRouter's `:free` models hit shared-pool rate limits
+ * immediately, and `meta-llama/llama-3.3-70b-instruct` (via its DeepInfra
+ * upstream) doesn't reliably emit native `tool_calls` at all — it
+ * returned the tool call as a literal `<function\web_search{...}</function>`
+ * text string instead, which this repo's tool-calling loop (looking for
+ * `message.tool_calls`) would never detect.
+ */
+export class OpenRouterProvider extends OpenAiCompatibleProvider {
+  protected readonly apiBase = "https://openrouter.ai/api/v1/chat/completions";
+  protected readonly model = "openai/gpt-4o-mini";
+  protected readonly providerName = "OpenRouter";
+
+  constructor(private readonly apiKey: string) {
+    super();
+  }
+
+  protected authHeaders() {
+    return { authorization: `Bearer ${this.apiKey}` };
   }
 }
 
@@ -308,16 +360,19 @@ export function classifyComplexity(messages: ChatMessage[]): "simple" | "complex
 }
 
 /**
- * Gemini or DeepSeek when a key is configured AND the prompt is classified
- * complex; Workers AI for everything else (including every request when
- * no external key is configured at all — no code change needed to add or
- * remove either from the mix).
+ * Gemini/DeepSeek/OpenRouter when a key is configured AND the prompt is
+ * classified complex; Workers AI for everything else (including every
+ * request when no external key is configured at all — no code change
+ * needed to add or remove any of them from the mix).
  *
- * DeepSeek is preferred over Gemini for the "complex" text tier when both
- * keys are set: cheaper per token and no aggressive free-tier rate limit
- * (see DeepSeekProvider above). Gemini remains the only vision-capable
- * option, so an attached image always routes to Gemini specifically,
- * regardless of which text-tier key is configured.
+ * Precedence for the complex text tier: OpenRouter > DeepSeek > Gemini.
+ * OpenRouter is tried first when configured — it's an independent
+ * quota/billing pool from the other two, so it's the option most likely
+ * to actually be available if one of the direct providers is
+ * rate-limited or unfunded (both observed live in this repo's own
+ * testing). Gemini remains the only vision-capable option, so an
+ * attached image always routes to Gemini specifically, regardless of
+ * which text-tier key is configured.
  *
  * An attached image forces Gemini regardless of complexity: Workers AI's
  * default model (WORKERS_AI_MODEL, above) is text-only, and swapping the
@@ -334,7 +389,7 @@ export class VisionUnavailableError extends Error {
 }
 
 export function resolveAiProvider(
-  env: { AI: Ai; GOOGLE_AI_API_KEY?: string; DEEPSEEK_API_KEY?: string },
+  env: { AI: Ai; GOOGLE_AI_API_KEY?: string; DEEPSEEK_API_KEY?: string; OPENROUTER_API_KEY?: string },
   messages: ChatMessage[],
 ): AiProvider {
   const hasImage = messages.some((m) => m.image);
@@ -342,7 +397,9 @@ export function resolveAiProvider(
     if (!env.GOOGLE_AI_API_KEY) throw new VisionUnavailableError();
     return new GeminiProvider(env.GOOGLE_AI_API_KEY);
   }
-  if ((env.DEEPSEEK_API_KEY || env.GOOGLE_AI_API_KEY) && classifyComplexity(messages) === "complex") {
+  const hasComplexTierKey = env.OPENROUTER_API_KEY || env.DEEPSEEK_API_KEY || env.GOOGLE_AI_API_KEY;
+  if (hasComplexTierKey && classifyComplexity(messages) === "complex") {
+    if (env.OPENROUTER_API_KEY) return new OpenRouterProvider(env.OPENROUTER_API_KEY);
     if (env.DEEPSEEK_API_KEY) return new DeepSeekProvider(env.DEEPSEEK_API_KEY);
     return new GeminiProvider(env.GOOGLE_AI_API_KEY!);
   }

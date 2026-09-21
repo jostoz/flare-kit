@@ -112,6 +112,12 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
   if (process.env.DEEPSEEK_API_KEY) {
     bindings.push({ type: "secret_text", name: "DEEPSEEK_API_KEY", text: process.env.DEEPSEEK_API_KEY });
   }
+  // OPENROUTER_API_KEY (opt-in): preferred over both DEEPSEEK_API_KEY and
+  // GOOGLE_AI_API_KEY for the complex text tier — an independent
+  // quota/billing pool from the other two (see src/server/ai-providers.ts).
+  if (process.env.OPENROUTER_API_KEY) {
+    bindings.push({ type: "secret_text", name: "OPENROUTER_API_KEY", text: process.env.OPENROUTER_API_KEY });
+  }
   // MCP_SERVER_URL (opt-in): a single remote MCP server whose tools are
   // exposed to the chat tool-calling loop alongside web_search (see
   // src/server/mcp.ts). Not a secret — a public server URL.

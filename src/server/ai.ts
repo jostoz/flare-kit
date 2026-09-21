@@ -3,7 +3,7 @@ import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { schema } from "../db/client";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./quota";
-import { resolveAiProvider, GeminiProvider, DeepSeekProvider, VisionUnavailableError, type ChatMessage } from "./ai-providers";
+import { resolveAiProvider, GeminiProvider, DeepSeekProvider, OpenRouterProvider, VisionUnavailableError, type ChatMessage, type AiProvider } from "./ai-providers";
 import { webSearchTool } from "./tools";
 import { mcpToolDefinitions } from "./mcp";
 
@@ -13,6 +13,8 @@ export interface AiEnv {
   GOOGLE_AI_API_KEY?: string;
   /** Opt-in: preferred over GOOGLE_AI_API_KEY for the complex text tier (cheaper per token, no aggressive rate limit). Vision stays Gemini-only regardless. */
   DEEPSEEK_API_KEY?: string;
+  /** Opt-in: preferred over both of the above for the complex text tier — an independent quota/billing pool. Vision stays Gemini-only regardless. */
+  OPENROUTER_API_KEY?: string;
   /** Opt-in: a single remote MCP server URL (Streamable HTTP transport) whose tools are exposed to the chat tool-calling loop alongside web_search. See src/server/mcp.ts. */
   MCP_SERVER_URL?: string;
 }
@@ -107,10 +109,10 @@ export async function runChatTurn(
 
   const provider = resolveAiProvider(env, turnMessages);
   // Tool-calling (web_search, plus any configured MCP server's tools)
-  // is Gemini/DeepSeek-only, see ai-providers.ts. The model decides
-  // per-turn whether to invoke any tool; offering the declarations
-  // doesn't change behavior for turns that don't need them.
-  const toolCallingSupported = provider instanceof GeminiProvider || provider instanceof DeepSeekProvider;
+  // is Gemini/DeepSeek/OpenRouter-only, see ai-providers.ts. The model
+  // decides per-turn whether to invoke any tool; offering the
+  // declarations doesn't change behavior for turns that don't need them.
+  const toolCallingSupported = provider instanceof GeminiProvider || provider instanceof DeepSeekProvider || provider instanceof OpenRouterProvider;
   let tools = toolCallingSupported ? [webSearchTool] : [];
   if (toolCallingSupported && env.MCP_SERVER_URL) {
     try {
@@ -121,22 +123,34 @@ export async function runChatTurn(
     }
   }
 
-  let generated: { text: string; estimatedUsageUnits: number };
-  try {
-    generated = await provider.generate(turnMessages, tools);
-  } catch (err) {
-    // DeepSeek can fail independently of the app (rate limit, billing —
-    // e.g. a real "Insufficient Balance" seen live in this repo's own
-    // testing). Falling back to Gemini keeps the request working
-    // instead of surfacing a 500 for an external provider outage; only
-    // meaningful when both keys are configured, since DeepSeek is only
-    // ever chosen over Gemini, never instead of Workers AI.
-    if (provider instanceof DeepSeekProvider && env.GOOGLE_AI_API_KEY) {
-      generated = await new GeminiProvider(env.GOOGLE_AI_API_KEY).generate(turnMessages, tools);
-    } else {
-      throw err;
+  async function generateWithFallback(): Promise<{ text: string; estimatedUsageUnits: number }> {
+    try {
+      return await provider.generate(turnMessages, tools);
+    } catch (err) {
+      // Any complex-tier provider can fail independently of the app (rate
+      // limit, billing — e.g. a real "Insufficient Balance" from DeepSeek
+      // and a real "429" from Gemini, both seen live in this repo's own
+      // testing). Falling back through the remaining configured providers,
+      // in the same OpenRouter > DeepSeek > Gemini precedence as
+      // resolveAiProvider, keeps the request working instead of surfacing a
+      // 500 for one external provider's outage when another is available.
+      const fallbacks: Array<AiProvider | undefined> = [
+        !(provider instanceof DeepSeekProvider) && env.DEEPSEEK_API_KEY ? new DeepSeekProvider(env.DEEPSEEK_API_KEY) : undefined,
+        !(provider instanceof GeminiProvider) && env.GOOGLE_AI_API_KEY ? new GeminiProvider(env.GOOGLE_AI_API_KEY) : undefined,
+      ];
+      let lastErr = err;
+      for (const fallbackProvider of fallbacks) {
+        if (!fallbackProvider) continue;
+        try {
+          return await fallbackProvider.generate(turnMessages, tools);
+        } catch (fallbackErr) {
+          lastErr = fallbackErr;
+        }
+      }
+      throw lastErr;
     }
   }
+  const generated = await generateWithFallback();
   const { text, estimatedUsageUnits } = generated;
 
   const now = Date.now();

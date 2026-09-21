@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { resolveAiProvider, classifyComplexity, WorkersAiProvider, GeminiProvider, DeepSeekProvider, VisionUnavailableError, type ChatMessage } from "../src/server/ai-providers";
+import { resolveAiProvider, classifyComplexity, WorkersAiProvider, GeminiProvider, DeepSeekProvider, OpenRouterProvider, VisionUnavailableError, type ChatMessage } from "../src/server/ai-providers";
 import type { ToolDefinition } from "../src/server/tools";
 
 const simple: ChatMessage[] = [{ role: "user", content: "Hi there!" }];
@@ -72,6 +72,22 @@ describe("resolveAiProvider", () => {
   it("still routes an image to Gemini even when DEEPSEEK_API_KEY is set", () => {
     const withImage: ChatMessage[] = [{ role: "user", content: "What is this?", image: { mimeType: "image/png", data: "abc123" } }];
     const provider = resolveAiProvider({ AI: {} as Ai, GOOGLE_AI_API_KEY: "g-key", DEEPSEEK_API_KEY: "ds-key" }, withImage);
+    expect(provider).toBeInstanceOf(GeminiProvider);
+  });
+
+  it("routes to OpenRouter for a complex prompt when only OPENROUTER_API_KEY is set", () => {
+    const provider = resolveAiProvider({ AI: {} as Ai, OPENROUTER_API_KEY: "or-key" }, complex);
+    expect(provider).toBeInstanceOf(OpenRouterProvider);
+  });
+
+  it("prefers OpenRouter over DeepSeek and Gemini when all three keys are set", () => {
+    const provider = resolveAiProvider({ AI: {} as Ai, GOOGLE_AI_API_KEY: "g-key", DEEPSEEK_API_KEY: "ds-key", OPENROUTER_API_KEY: "or-key" }, complex);
+    expect(provider).toBeInstanceOf(OpenRouterProvider);
+  });
+
+  it("still routes an image to Gemini even when OPENROUTER_API_KEY is set", () => {
+    const withImage: ChatMessage[] = [{ role: "user", content: "What is this?", image: { mimeType: "image/png", data: "abc123" } }];
+    const provider = resolveAiProvider({ AI: {} as Ai, GOOGLE_AI_API_KEY: "g-key", OPENROUTER_API_KEY: "or-key" }, withImage);
     expect(provider).toBeInstanceOf(GeminiProvider);
   });
 });
@@ -187,5 +203,28 @@ describe("DeepSeekProvider tool-calling loop", () => {
     expect(searchTool.execute).toHaveBeenCalledWith({ query: "weather" });
     expect(result.text).toBe("It's sunny today.");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("OpenRouterProvider", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts to OpenRouter's chat-completions endpoint and returns the model's reply", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { role: "assistant", content: "Hi!" } }],
+        usage: { total_tokens: 10 },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = new OpenRouterProvider("test-key");
+    const result = await provider.generate([{ role: "user", content: "Say hi." }]);
+
+    expect(result.text).toBe("Hi!");
+    expect(fetchMock).toHaveBeenCalledWith("https://openrouter.ai/api/v1/chat/completions", expect.objectContaining({ method: "POST" }));
   });
 });
