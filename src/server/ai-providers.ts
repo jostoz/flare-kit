@@ -42,7 +42,7 @@ function estimateUsageUnits(messages: ChatMessage[]): number {
   return Math.ceil(totalChars / 4 / 10) + 5;
 }
 
-const WORKERS_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+const WORKERS_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8"; // plain llama-3.1-8b-instruct was deprecated 2026-05-30 (error 5028); confirmed live.
 const MAX_OUTPUT_TOKENS = 256;
 
 export class WorkersAiProvider implements AiProvider {
@@ -100,8 +100,42 @@ export class GeminiProvider implements AiProvider {
   }
 }
 
-/** Gemini when GOOGLE_AI_API_KEY is set, Workers AI otherwise — no code change needed to switch. */
-export function resolveAiProvider(env: { AI: Ai; GOOGLE_AI_API_KEY?: string }): AiProvider {
-  if (env.GOOGLE_AI_API_KEY) return new GeminiProvider(env.GOOGLE_AI_API_KEY);
+/**
+ * Smart routing (PicoClaw-inspired: "simple queries go to lightweight
+ * models, saving API costs"). Only meaningful when GOOGLE_AI_API_KEY is
+ * set — Gemini costs real money per call beyond its own free tier, while
+ * Workers AI's Neuron pool is Cloudflare's, already budgeted. Routing a
+ * short, simple prompt to Gemini would spend external API budget on
+ * something the free in-network model handles fine; routing a complex
+ * prompt to the small in-network model risks a worse answer.
+ *
+ * A short, single-sentence question stays on Workers AI. A long prompt,
+ * one with code/analysis intent, or one already carrying enough
+ * conversation history to need real reasoning gets escalated to Gemini.
+ * This is a heuristic, not a classifier model — tune the thresholds/regex
+ * against real usage, not this comment.
+ */
+const COMPLEXITY_LENGTH_THRESHOLD = 240; // chars in the latest user turn
+const COMPLEXITY_HISTORY_THRESHOLD = 4; // turns of context already accumulated
+const COMPLEXITY_KEYWORDS = /\b(explain|analyze|analyse|compare|debug|refactor|write (a|an|some)|summari[sz]e|code|function|algorithm|architecture|design|plan|step[- ]by[- ]step)\b/i;
+
+export function classifyComplexity(messages: ChatMessage[]): "simple" | "complex" {
+  const latest = messages[messages.length - 1]?.content ?? "";
+  if (latest.length > COMPLEXITY_LENGTH_THRESHOLD) return "complex";
+  if (COMPLEXITY_KEYWORDS.test(latest)) return "complex";
+  if (messages.length > COMPLEXITY_HISTORY_THRESHOLD) return "complex";
+  return "simple";
+}
+
+/**
+ * Gemini only when GOOGLE_AI_API_KEY is set AND the prompt is classified
+ * complex; Workers AI for everything else (including every request when
+ * no Gemini key is configured at all — no code change needed to add or
+ * remove Gemini from the mix).
+ */
+export function resolveAiProvider(env: { AI: Ai; GOOGLE_AI_API_KEY?: string }, messages: ChatMessage[]): AiProvider {
+  if (env.GOOGLE_AI_API_KEY && classifyComplexity(messages) === "complex") {
+    return new GeminiProvider(env.GOOGLE_AI_API_KEY);
+  }
   return new WorkersAiProvider(env.AI);
 }

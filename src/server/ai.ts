@@ -59,7 +59,7 @@ export function createAiRouter() {
       const history: ChatMessage[] = recentRows.reverse().map((m) => ({ role: m.role, content: m.content }));
       const turnMessages: ChatMessage[] = [...history, { role: "user", content: prompt }];
 
-      const provider = resolveAiProvider(c.env);
+      const provider = resolveAiProvider(c.env, turnMessages);
       const { text, estimatedUsageUnits } = await provider.generate(turnMessages);
 
       const now = Date.now();
