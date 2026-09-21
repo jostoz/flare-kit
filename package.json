@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "postinstall": "wrangler types",
     "deploy": "bun run scripts/bootstrap.ts",
     "teardown": "bun run scripts/teardown.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:integration": "tsc --noEmit -p test/integration/tsconfig.json",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "budget:cpu": "vitest run test/budget.cpu.test.tsx",
     "budget:check": "bun run scripts/budget-check.ts",
     "db:generate": "drizzle-kit generate",
@@ -27,14 +30,14 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250917.0",
+    "@cloudflare/vitest-plugin": "^1.1.13",
     "@types/bun": "^1.2.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "drizzle-kit": "^0.31.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5",
+    "vitest": "^4.1.0",
     "wrangler": "^4.35.0"
   }
 }

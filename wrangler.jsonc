@@ -20,7 +20,7 @@
   "observability": { "enabled": true },
 
   "d1_databases": [
-    { "binding": "DB", "database_name": "flare-kit-db", "database_id": "REPLACE_WITH_D1_ID" }
+    { "binding": "DB", "database_name": "flare-kit-db", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "drizzle/migrations" }
   ],
 
   // SOLO lectura-caché. Prohibido escribir por-request (1,000 escrituras/día).

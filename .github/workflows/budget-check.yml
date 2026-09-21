@@ -11,8 +11,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run typecheck:integration
+      - name: Integration tests (real D1 + real Workers runtime)
+        run: bun run test:integration
       - name: CPU budget (TRD §7.1)
-        run: bunx vitest run test/budget.cpu.test.ts
+        run: bunx vitest run test/budget.cpu.test.tsx
       - name: Data budget projection (TRD §7.2)
         run: bun run budget:check
       - name: Quota-degradation contract (TRD §7.5)

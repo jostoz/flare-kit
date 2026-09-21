@@ -5,3 +5,4 @@ dist-check
 .env
 .flare-kit.state.json
 *.log
+worker-configuration.d.ts

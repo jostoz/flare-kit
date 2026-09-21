@@ -1,6 +1,6 @@
 # flare-kit
 
-Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `docs/TRD.md` for the full technical requirements document, including every free-tier limit verified against Cloudflare's current docs and the measurements backing each design decision.
+Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `docs/TRD.md` for the full technical requirements document, including every free-tier limit verified against Cloudflare's current docs and the measurements backing each design decision. Adding a new route? See [`docs/adding-a-route.md`](docs/adding-a-route.md) first.
 
 ## Stack
 
@@ -15,20 +15,24 @@ Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `doc
 ## Commands
 
 ```bash
-bun install
+bun install              # postinstall runs `wrangler types`
 bun run dev              # wrangler dev, local
 bun run typecheck
-bun test                 # vitest: quota degradation + SSR CPU smoke test
+bun run typecheck:integration
+bun test                 # vitest, Node environment: quota degradation + SSR CPU smoke test
+bun run test:integration # vitest, real Workers runtime (Miniflare): D1 + auth + caching, see docs/adding-a-route.md
 bun run budget:check     # TRD §7.2 data-quota projection gate
 bun run size              # wrangler dry-run + gzip bundle size check (TRD §7.6)
+bun run bench:ttfb        # TRD §7.4 multi-region TTFB against a live deployment
 CLOUDFLARE_API_TOKEN=... bun run deploy    # TRD §5 one-command provisioning
 CLOUDFLARE_API_TOKEN=... bun run teardown  # tears down what bootstrap created
 ```
 
 ## Verified in this repo
 
-- `bun run typecheck` — clean.
+- `bun run typecheck` / `bun run typecheck:integration` — clean.
 - `bun test` — 4/4 passing (quota degradation contract, SSR CPU smoke test).
+- `bun run test:integration` — 4/4 passing against the real Workers runtime (Miniflare: real D1, real `crypto.subtle`, real bindings) — sign-up → sign-in → authenticated `/dashboard`, an unauthenticated `/api/*` rate-limit check, and `/` cache headers. This suite is what would have caught 3 of the 4 bugs listed below before they ever reached a live deploy; see `docs/adding-a-route.md`.
 - `bun run budget:check` — passes at 66.7% D1 read/write, 33.3% Workers requests, projected at 5,000 MAU.
 - `wrangler deploy --dry-run` — builds clean with all 7 bindings; **600 KB gzip**, under the 1 MB budget.
 - Live `bootstrap.ts` roundtrip against the real Cloudflare REST API — deployed to `https://flare-kit-app.jostoztado.workers.dev`.

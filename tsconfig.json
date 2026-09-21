@@ -11,10 +11,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types", "@types/bun", "@types/node", "vitest/globals"],
+    "types": ["@types/bun", "@types/node", "vitest/globals"],
     "paths": {
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src", "scripts", "budget.config.ts", "test"]
+  "include": ["src", "scripts", "budget.config.ts", "test", "worker-configuration.d.ts"],
+  "exclude": ["test/integration"]
 }

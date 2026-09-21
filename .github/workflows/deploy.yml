@@ -12,7 +12,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run typecheck:integration
       - run: bun test
+      - run: bun run test:integration
       - run: bun run budget:check
       - name: Build
         run: bunx wrangler deploy --dry-run --outdir dist

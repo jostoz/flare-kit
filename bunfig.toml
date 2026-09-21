@@ -1,0 +1,9 @@
+[test]
+# `test/integration/**` requires the real Workers runtime (Miniflare, via
+# `@cloudflare/vitest-plugin` — see vitest.integration.config.ts) and is not
+# discoverable by Bun's native test runner: `cloudflare:workers` and
+# `cloudflare:test` only resolve inside that runtime. Bare `bun test` would
+# otherwise crash on these files with a confusing "Cannot find package"
+# error. Use `bun run test` (Node, vitest.config.ts) and
+# `bun run test:integration` (Workers runtime) instead.
+pathIgnorePatterns = ["test/integration/**"]
