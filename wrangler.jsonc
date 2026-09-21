@@ -5,6 +5,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
 
+  // Required for Cache-Control response headers to actually be honored —
+  // without this, Cloudflare never consults a cache before running the
+  // Worker, regardless of what headers a route returns (TRD §7.4).
+  "cache": { "enabled": true },
+
   // Estáticos: gratis, ilimitados, NO cuentan como request de Worker.
   "assets": {
     "directory": "./public",

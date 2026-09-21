@@ -12,7 +12,7 @@ import type { ReactElement } from "react";
  * a live deploy in this environment. TanStack Router drives client-side
  * navigation; SSR is plain React streamed straight from the Worker.
  */
-export async function renderPage(element: ReactElement, title: string): Promise<Response> {
+export async function renderPage(element: ReactElement, title: string, extraHeaders?: HeadersInit): Promise<Response> {
   const stream = await renderToReadableStream(
     <html lang="en">
       <head>
@@ -27,5 +27,5 @@ export async function renderPage(element: ReactElement, title: string): Promise<
       </body>
     </html>,
   );
-  return new Response(stream, { headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(stream, { headers: { "content-type": "text/html; charset=utf-8", ...extraHeaders } });
 }
