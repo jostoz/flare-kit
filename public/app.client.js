@@ -12,7 +12,11 @@ const authForms = document.querySelectorAll("[data-auth-form]");
 for (const tab of authTabs) {
   tab.addEventListener("click", () => {
     const target = tab.getAttribute("data-auth-tab");
-    for (const t of authTabs) t.classList.toggle("active", t === tab);
+    for (const t of authTabs) {
+      const isActive = t === tab;
+      t.classList.toggle("active", isActive);
+      t.setAttribute("aria-selected", String(isActive));
+    }
     for (const form of authForms) form.hidden = form.getAttribute("data-auth-form") !== target;
   });
 }
