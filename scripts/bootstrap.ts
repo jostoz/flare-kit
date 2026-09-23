@@ -8,10 +8,75 @@
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { CloudflareClient } from "../src/lib/cf/client";
 
 const REQUIRED_SCOPES_HINT =
   "Workers Scripts:Edit, Workers KV Storage:Edit, Workers R2 Storage:Edit, D1:Edit, Workers AI:Edit, Account Settings:Read";
+
+const CONTENT_TYPES: Record<string, string> = {
+  html: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  js: "application/javascript",
+  json: "application/json",
+  svg: "image/svg+xml",
+  png: "image/png",
+  ico: "image/x-icon",
+};
+
+/**
+ * Workers Static Assets direct-upload flow (src/lib/cf/client.ts). This
+ * raw multipart deploy path doesn't read wrangler.jsonc's `assets` block
+ * at all — files served from `public/` (referenced by `<link>`/`<script>`
+ * tags in src/app/render.tsx) have to be uploaded through this API
+ * explicitly, or they 404 in production despite building and rendering
+ * fine locally (a real bug this repo shipped with silently — nothing ever
+ * checked that `/app.css` actually loaded, only that the HTML shell did).
+ *
+ * Hash algorithm matches Cloudflare's own reference implementation
+ * exactly (cloudflare-typescript's script-with-assets-upload.ts example):
+ * `sha256(base64Content + extensionWithoutDot).hex().slice(0, 32)`.
+ */
+async function uploadStaticAssets(cf: CloudflareClient, accountId: string, workerName: string, publicDir: string): Promise<{ jwt: string } | undefined> {
+  if (!existsSync(publicDir)) return undefined;
+
+  const files = readdirSync(publicDir, { withFileTypes: true }).filter((e) => e.isFile());
+  if (files.length === 0) return undefined;
+
+  const manifest: Record<string, { hash: string; size: number }> = {};
+  const byHash: Record<string, { path: string; extension: string; base64: string }> = {};
+
+  for (const entry of files) {
+    const filePath = join(publicDir, entry.name);
+    const content = readFileSync(filePath);
+    const base64 = content.toString("base64");
+    const extension = entry.name.includes(".") ? entry.name.split(".").pop()! : "";
+    const hash = createHash("sha256").update(base64 + extension).digest("hex").slice(0, 32);
+    const manifestPath = `/${entry.name}`;
+    manifest[manifestPath] = { hash, size: content.length };
+    byHash[hash] = { path: manifestPath, extension, base64 };
+  }
+
+  const session = await cf.createAssetsUploadSession(accountId, workerName, manifest);
+  if (session.buckets.length === 0) {
+    // Every file already uploaded by hash in a prior deploy — the session
+    // response's own jwt doubles as the completion token in this case.
+    return { jwt: session.jwt };
+  }
+
+  let completionJwt: string | undefined;
+  for (const bucket of session.buckets) {
+    const filesForBucket = bucket.map((hash) => {
+      const file = byHash[hash];
+      if (!file) throw new Error(`Asset upload session referenced an unknown hash: ${hash}`);
+      return { hash, contentType: CONTENT_TYPES[file.extension] ?? "application/octet-stream", base64: file.base64 };
+    });
+    const res = await cf.uploadAssetBucket(accountId, session.jwt, filesForBucket);
+    if (res.jwt) completionJwt = res.jwt;
+  }
+  if (!completionJwt) throw new Error("Static asset upload completed but no completion JWT was returned.");
+  return { jwt: completionJwt };
+}
 
 interface BootstrapResult {
   accountId: string;
@@ -89,7 +154,13 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
     );
   }
 
-  // 7-8. Deploy Worker with bindings pointed at the real resource IDs.
+  // 7. Upload static assets from public/ (Workers Static Assets direct
+  // upload — see uploadStaticAssets above for why this raw multipart
+  // deploy path needs it done by hand).
+  const publicDir = join(import.meta.dir, "..", "public");
+  const assetsSession = await uploadStaticAssets(cf, accountId, workerName, publicDir);
+
+  // 8-9. Deploy Worker with bindings pointed at the real resource IDs.
   const bindings: Array<Record<string, unknown>> = [
     { type: "d1", name: "DB", id: d1.uuid },
     { type: "kv_namespace", name: "CONFIG_KV", namespace_id: kv.id },
@@ -98,6 +169,9 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
     { type: "ratelimit", name: "API_LIMITER", namespace_id: "1001", simple: { limit: 100, period: 60 } },
     { type: "secret_text", name: "AUTH_SECRET", text: authSecret },
   ];
+  if (assetsSession) {
+    bindings.push({ type: "assets", name: "ASSETS" });
+  }
   // Optional providers: only bound if their credentials are present in the
   // deploy environment, so bootstrap.ts stays runnable without them.
   // GOOGLE_AI_API_KEY routes /api/ai/chat to Gemini instead of Workers AI
@@ -165,6 +239,9 @@ export async function bootstrap(opts: { apiToken: string; workerName?: string })
     // `cache` key is Wrangler's own config surface, translated internally;
     // it is not what this raw multipart request accepts.
     cache_options: { enabled: true },
+    // Mirrors wrangler.jsonc's `assets.not_found_handling` — same
+    // "wrangler.jsonc isn't read by this raw API" caveat as cache_options.
+    ...(assetsSession ? { assets: { jwt: assetsSession.jwt, config: { not_found_handling: "single-page-application" } } } : {}),
   };
   const form = new FormData();
   form.append("metadata", JSON.stringify(metadata));

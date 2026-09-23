@@ -76,6 +76,49 @@ export class CloudflareClient {
     return this.request(`/accounts/${accountId}/workers/scripts/${name}`, { method: "PUT", body: formData });
   }
 
+  /**
+   * Workers Static Assets direct-upload flow (this raw multipart deploy
+   * path doesn't read wrangler.jsonc's `assets` block at all — see
+   * scripts/bootstrap.ts). Registers a manifest of files-to-serve; the
+   * response's `buckets` lists which file hashes still need uploading
+   * (already-uploaded-by-hash files are omitted, so a rerun with
+   * unchanged files skips real upload work).
+   */
+  async createAssetsUploadSession(
+    accountId: string,
+    workerName: string,
+    manifest: Record<string, { hash: string; size: number }>,
+  ): Promise<{ jwt: string; buckets: string[][] }> {
+    return this.request(`/accounts/${accountId}/workers/scripts/${workerName}/assets-upload-session`, {
+      method: "POST",
+      body: JSON.stringify({ manifest }),
+    });
+  }
+
+  /**
+   * Uploads one bucket (batch of file hashes) from `createAssetsUploadSession`.
+   * Authenticated with the short-lived upload JWT from that call, NOT this
+   * client's own account-scoped API token — `request()`'s default
+   * `Authorization` header is overridden via `init.headers` (spread last).
+   * Each part's `Content-Type` is what Cloudflare serves the file with
+   * later — `application/null` (skip the header) would break CSS/JS
+   * serving, so callers must supply the real MIME type per file. The
+   * final bucket's response carries the completion JWT needed by the
+   * script deploy's `metadata.assets.jwt`.
+   */
+  async uploadAssetBucket(accountId: string, uploadJwt: string, files: Array<{ hash: string; contentType: string; base64: string }>): Promise<{ jwt?: string }> {
+    const form = new FormData();
+    for (const { hash, contentType, base64 } of files) {
+      form.append(hash, new Blob([base64], { type: contentType }), hash);
+    }
+    return this.request(`/accounts/${accountId}/workers/assets/upload?base64=true`, {
+      method: "POST",
+      body: form,
+      headers: { Authorization: `Bearer ${uploadJwt}` },
+    });
+  }
+
+
   async enableSubdomain(accountId: string, name: string): Promise<{ subdomain: string }> {
     return this.request(`/accounts/${accountId}/workers/scripts/${name}/subdomain`, {
       method: "POST",

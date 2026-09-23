@@ -120,7 +120,13 @@ CLOUDFLARE_API_TOKEN=... bun run scripts/bootstrap.ts   # raw Cloudflare API upl
 not `wrangler deploy` — every binding (D1, KV, R2, AI, rate limiter, every
 secret) is built by hand in that script from `process.env`, not read from
 `wrangler.jsonc`. A new required binding has to be added to `bootstrap.ts`'s
-`bindings` array or it silently won't exist in production.
+`bindings` array or it silently won't exist in production. This includes
+`public/` static assets: `wrangler.jsonc`'s `assets` block is Wrangler-only
+config this raw API doesn't read — `bootstrap.ts`'s `uploadStaticAssets`
+implements Cloudflare's Workers Static Assets direct-upload flow by hand
+(`src/lib/cf/client.ts`) so `/app.css`/`/app.client.js` actually get
+uploaded and served; a new file in `public/` needs no code change, but a
+new build step that changes where static output lands does.
 
 **Secret bindings persist across deploys even when omitted from a
 `bootstrap.ts` run** — Cloudflare does not clear a `secret_text` binding

@@ -10,7 +10,7 @@ import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./server/q
 import { reconcileNeuronUsage, type CronEnv } from "./server/cron";
 import { createTelegramRouter, type TelegramEnv } from "./server/telegram";
 import { renderPage } from "./app/render";
-import { Dashboard } from "./app/components/Dashboard";
+import { Landing } from "./app/components/Landing";
 import { UserDashboard } from "./app/components/UserDashboard";
 
 export interface Env extends StripeEnv, AiEnv, R2Env, CronEnv, TelegramEnv {
@@ -82,13 +82,7 @@ app.route("/api/telegram", createTelegramRouter());
 // Static content, same HTML for every visitor: safe to edge-cache (TRD §7.4
 // static-route budget, p75 < 50ms). Never add per-user data to this route
 // without dropping this header — see /dashboard for the authenticated case.
-app.get("/", async (c) => {
-  const rows = [
-    { id: "1", label: "Welcome to flare-kit", status: "active" as const },
-    { id: "2", label: "$0/month on Cloudflare Free Tier", status: "active" as const },
-  ];
-  return renderPage(<Dashboard rows={rows} />, "flare-kit", { "cache-control": "public, max-age=60" });
-});
+app.get("/", () => renderPage(<Landing />, "flare-kit — $0/month AI assistant on Cloudflare", { "cache-control": "public, max-age=60" }));
 
 // Authenticated, per-user, D1 on the hot path every request — the TRD §7.4
 // "dynamic route with D1" budget (p75 < 200ms) applies here, not to "/".
