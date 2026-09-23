@@ -1,6 +1,6 @@
 # flare-kit
 
-Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `docs/TRD.md` for the full technical requirements document, including every free-tier limit verified against Cloudflare's current docs and the measurements backing each design decision. Adding a new route? See [`docs/adding-a-route.md`](docs/adding-a-route.md) first.
+Full-stack $0/month Micro-SaaS boilerplate on the Cloudflare Free Tier. See `docs/TRD.md` for the full technical requirements document, including every free-tier limit verified against Cloudflare's current docs and the measurements backing each design decision. Adding a new route? See [`docs/adding-a-route.md`](docs/adding-a-route.md) first. **AI coding agent working in this repo? Read [`AGENTS.md`](AGENTS.md) first** — deploy path, secret-persistence behavior, migration rules, and testing gotchas that aren't obvious from the code alone.
 
 ## Stack
 
