@@ -144,3 +144,19 @@ footer.site-footer { padding: var(--space-6) 0; border-top: 1px solid var(--colo
 @media (max-width: 900px) {
   .feature { grid-template-columns: 1fr; gap: var(--space-2); }
 }
+
+/* ════════════════════════ chat panel (dashboard) ════════════════════════ */
+.chat-log { display: flex; flex-direction: column; gap: var(--space-3); max-height: 24rem; overflow-y: auto; padding-bottom: var(--space-2); }
+.chat-msg { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--color-divider); }
+.chat-msg p { margin: 0; font-size: 13px; line-height: 20px; white-space: pre-wrap; }
+.chat-msg-user { background: var(--color-neutral-900); align-self: flex-end; max-width: 85%; }
+.chat-msg-assistant { background: var(--color-surface); align-self: flex-start; max-width: 85%; }
+.chat-msg.is-pending .chat-role::after { content: "…"; }
+.chat-msg.is-error { border-color: #ff6b6b; }
+.chat-role { font-size: 10px; }
+.chat-form { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); border-top: 1px solid var(--color-divider); padding-top: var(--space-4); }
+.chat-form textarea.input { resize: vertical; font-family: var(--font-body); }
+.chat-form-row { display: flex; align-items: center; gap: var(--space-3); }
+.chat-attach { position: relative; font-size: 11px; }
+.chat-attach.has-file { border-color: var(--color-accent); }
+.chat-form-row .btn-primary { margin-left: auto; }

@@ -1,10 +1,10 @@
 import { Hono, type Context } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { createDb, type Db } from "./db/client";
 import { schema } from "./db/client";
 import { createAuth } from "./server/auth";
 import { createStripeRouter, type StripeEnv } from "./server/stripe";
-import { createAiRouter, type AiEnv, PER_USER_DAILY_NEURON_CAP } from "./server/ai";
+import { createAiRouter, type AiEnv, PER_USER_DAILY_NEURON_CAP, AI_HISTORY_WINDOW } from "./server/ai";
 import { createR2Router, type R2Env } from "./server/r2";
 import { withQuotaGuard, degradedResponse, QuotaExceededError } from "./server/quota";
 import { reconcileNeuronUsage, type CronEnv } from "./server/cron";
@@ -93,7 +93,7 @@ app.get("/dashboard", async (c) => {
   const day = new Date().toISOString().slice(0, 10);
 
   try {
-    const [[user], [usage]] = await withQuotaGuard(() =>
+    const [[user], [usage], recentMessages] = await withQuotaGuard(() =>
       Promise.all([
         db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1),
         db
@@ -101,6 +101,7 @@ app.get("/dashboard", async (c) => {
           .from(schema.aiUsage)
           .where(and(eq(schema.aiUsage.userId, userId), eq(schema.aiUsage.day, day)))
           .limit(1),
+        db.select().from(schema.messages).where(eq(schema.messages.userId, userId)).orderBy(desc(schema.messages.createdAt)).limit(AI_HISTORY_WINDOW),
       ]),
     );
     if (!user) return c.json({ error: "not_found" }, 404);
@@ -111,6 +112,7 @@ app.get("/dashboard", async (c) => {
           name: user.name,
           neuronsToday: usage?.neurons ?? 0,
           neuronsBudget: PER_USER_DAILY_NEURON_CAP,
+          recentMessages: recentMessages.reverse().map((m) => ({ role: m.role, content: m.content })),
         }}
       />,
       "flare-kit — dashboard",
