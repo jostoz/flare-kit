@@ -17,7 +17,11 @@ for (const tab of authTabs) {
       t.classList.toggle("active", isActive);
       t.setAttribute("aria-selected", String(isActive));
     }
-    for (const form of authForms) form.hidden = form.getAttribute("data-auth-form") !== target;
+    for (const form of authForms) {
+      const isTarget = form.getAttribute("data-auth-form") === target;
+      form.hidden = !isTarget;
+      if (isTarget) form.querySelector("input")?.focus();
+    }
   });
 }
 
@@ -71,6 +75,7 @@ if (chatForm) {
   chatLog.setAttribute("role", "log");
 
   const promptField = chatForm.querySelector("textarea[name=prompt]");
+  promptField.focus({ preventScroll: true });
   const fileInput = chatForm.querySelector("input[name=image]");
   const attachLabel = chatForm.querySelector(".chat-attach");
   const filenameEl = chatForm.querySelector("[data-chat-filename]");
@@ -86,7 +91,12 @@ if (chatForm) {
     roleEl.className = "mono chat-role";
     roleEl.textContent = role;
     const bodyEl = document.createElement("p");
-    bodyEl.textContent = text;
+    if (opts.pending) {
+      bodyEl.setAttribute("aria-label", "Thinking");
+      bodyEl.appendChild(document.createElement("span")); // the CSS ::before/span/::after triad renders three animated dots
+    } else {
+      bodyEl.textContent = text;
+    }
     el.append(roleEl, bodyEl);
     chatLog.appendChild(el);
     chatLog.scrollTop = chatLog.scrollHeight;

@@ -12,13 +12,19 @@ import type { ReactElement } from "react";
  * a live deploy in this environment. TanStack Router drives client-side
  * navigation; SSR is plain React streamed straight from the Worker.
  */
-export async function renderPage(element: ReactElement, title: string, extraHeaders?: HeadersInit): Promise<Response> {
+export async function renderPage(element: ReactElement, title: string, extraHeaders?: HeadersInit, description?: string): Promise<Response> {
+  const desc = description ?? "A full-stack AI assistant, running entirely on Cloudflare's $0/month Free Tier.";
   const stream = await renderToReadableStream(
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
+        <meta name="description" content={desc} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={desc} />
+        <meta property="og:type" content="website" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <link rel="stylesheet" href="/app.css" />
       </head>
       <body>
